@@ -1,0 +1,6 @@
+{
+  "name": "Trendy Unisex Salon Management System",
+  "description": "Complete salon operations, POS billing, commission and lunch deduction engine, CRM, inventory, financial reporting, Google Sheets sync, and Gemini AI insights for Trendy Unisex Salon in Madibira 'A', Busia District, Uganda.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
