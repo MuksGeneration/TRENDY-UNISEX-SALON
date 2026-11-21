@@ -16,6 +16,7 @@ import type {
   EmployeeRecord,
   PaymentMethod,
   POSTransactionRecord,
+  SalonBranding,
   ServiceItem,
   SessionUser,
   StockItem,
@@ -32,6 +33,7 @@ interface PosPrefill {
 
 interface PosBillingViewProps {
   user: SessionUser;
+  branding?: SalonBranding;
   prefill?: PosPrefill | null;
   onClearPrefill?: () => void;
 }
@@ -57,6 +59,7 @@ interface PaymentSplit {
 
 export const PosBillingView: React.FC<PosBillingViewProps> = ({
   user,
+  branding,
   prefill,
   onClearPrefill,
 }) => {
@@ -338,7 +341,7 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
         {lastReceipt && (
           <div className="flex items-center gap-2">
             <button
-              onClick={() => downloadReceiptPdf(lastReceipt)}
+              onClick={() => downloadReceiptPdf(lastReceipt, branding)}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1D1717] text-white text-xs font-semibold cursor-pointer"
             >
               <FileDown className="w-3.5 h-3.5" />
@@ -817,7 +820,7 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
                       </td>
                       <td className="py-3 px-3 text-right whitespace-nowrap space-x-2">
                         <button
-                          onClick={() => downloadReceiptPdf(tx)}
+                          onClick={() => downloadReceiptPdf(tx, branding)}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-[#1D1717]/15 hover:bg-[#F8EEEB] cursor-pointer"
                         >
                           <FileDown className="w-3 h-3" /> PDF

@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
+  AlertTriangle,
   Bell,
   Check,
+  CheckCircle2,
+  Clock,
   Cloud,
   Copy,
   Database,
@@ -12,15 +15,20 @@ import {
   FileSpreadsheet,
   FileText,
   FolderOpen,
+  History,
   Image as ImageIcon,
+  LogOut,
   Plus,
   RefreshCw,
   RotateCcw,
   Scissors,
+  Search,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
   Upload,
   X,
+  XCircle,
 } from 'lucide-react';
 import { apiFetch, fetchDriveMediaBlobUrl } from '../lib/api';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -29,8 +37,11 @@ import type {
   DriveDocumentRecord,
   EmployeeRecord,
   SalonSettings,
+  SessionEventStatus,
   SessionUser,
   UserRole,
+  UserSessionRecord,
+  UserSessionSummary,
 } from '../types';
 
 async function resizeSalonLogoToDataUrl(file: File): Promise<string> {
@@ -155,13 +166,27 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [uEmpId, setUEmpId] = useState('');
   const [uPass, setUPass] = useState('');
 
-  // Audit logs
+  // Audit logs & User Session History
   const [logs, setLogs] = useState<
     Array<{ id: string; timestamp: string; userName: string; userRole: string; action: string; entityType: string; details: string }>
   >([]);
   const [migrations, setMigrations] = useState<
     Array<{ id: string; fileName: string; migratedAt: string; migratedBy: string; backupId: string; recordsImported: number; sheetsImported: string[] }>
   >([]);
+  const [auditTab, setAuditTab] = useState<'audit' | 'sessions'>('audit');
+  const [sessionHistory, setSessionHistory] = useState<UserSessionRecord[]>([]);
+  const [sessionSummary, setSessionSummary] = useState<UserSessionSummary>({
+    totalEvents: 0,
+    activeSessions: 0,
+    signedOutCount: 0,
+    suspiciousCount: 0,
+    failedAttemptsCount: 0,
+    revokedCount: 0,
+  });
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sessionStatusFilter, setSessionStatusFilter] = useState<'all' | SessionEventStatus>('all');
+  const [sessionSearch, setSessionSearch] = useState('');
+  const [loadingSessions, setLoadingSessions] = useState(false);
 
   // Settings & Workspace
   const [settingsTab, setSettingsTab] = useState<'general' | 'workspace' | 'migration' | 'backups'>('general');
@@ -177,6 +202,31 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   >([]);
   const [driveDocs, setDriveDocs] = useState<DriveDocumentRecord[]>([]);
   const [driveRootFolderId, setDriveRootFolderId] = useState('');
+  const [workspaceStatus, setWorkspaceStatus] = useState<{
+    platform: string;
+    serverCredentialsConfigured: boolean;
+    serverCredentialMode: 'apps_script' | 'service_account' | 'refresh_token' | 'none';
+    appsScriptConfigured?: boolean;
+    appsScriptUrl?: string;
+    envSpreadsheetConfigured: boolean;
+    envDriveFolderConfigured: boolean;
+    linkedSpreadsheetId: string;
+    linkedSpreadsheetUrl: string;
+    linkedDriveFolderId: string;
+    lastSheetsSyncAt: string;
+  } | null>(null);
+  const [linkSheetIdInput, setLinkSheetIdInput] = useState('');
+  const [linkDriveFolderInput, setLinkDriveFolderInput] = useState('');
+  const [linkAppsScriptUrlInput, setLinkAppsScriptUrlInput] = useState('');
+  const [testingAppsScript, setTestingAppsScript] = useState(false);
+  const [scanningWorkbook, setScanningWorkbook] = useState(false);
+  const [importingLegacySheet, setImportingLegacySheet] = useState(false);
+  const [legacyWorkbookScan, setLegacyWorkbookScan] = useState<{
+    spreadsheetId: string;
+    hasSystemState: boolean;
+    tabs: Array<{ name: string; rowCount: number; headers: string[]; detectedType: string }>;
+  } | null>(null);
+  const [selectedLegacyTabs, setSelectedLegacyTabs] = useState<string[]>([]);
   const [docCategoryFilter, setDocCategoryFilter] = useState<'All' | DriveDocumentCategory>('All');
   const [uploadCategory, setUploadCategory] = useState<DriveDocumentCategory>('Expense Receipt');
   const [uploadFileName, setUploadFileName] = useState('');
@@ -209,6 +259,30 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [parsedSheets, setParsedSheets] = useState<Record<string, Record<string, unknown>[]>>({});
   const [ownerApprovedMigration, setOwnerApprovedMigration] = useState(false);
 
+  const loadSessionHistory = async (
+    statusVal = sessionStatusFilter,
+    searchVal = sessionSearch
+  ) => {
+    setLoadingSessions(true);
+    try {
+      const q = new URLSearchParams();
+      if (statusVal !== 'all') q.set('status', statusVal);
+      if (searchVal.trim()) q.set('search', searchVal.trim());
+      const res = await apiFetch<{
+        sessions: UserSessionRecord[];
+        summary: UserSessionSummary;
+        currentSessionId: string | null;
+      }>(`/api/session-history?${q.toString()}`);
+      setSessionHistory(res.sessions);
+      setSessionSummary(res.summary);
+      setCurrentSessionId(res.currentSessionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load user session history.');
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
   const load = async () => {
     setError('');
     try {
@@ -216,18 +290,36 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
         const res = await apiFetch<{ notifications: typeof notifications }>('/api/notifications');
         setNotifications(res.notifications);
       } else if (mode === 'users') {
-        const [uRes, eRes] = await Promise.all([
+        const [uRes, eRes, sRes] = await Promise.all([
           apiFetch<{ users: typeof users }>('/api/users'),
           apiFetch<{ employees: EmployeeRecord[] }>('/api/employees'),
+          apiFetch<{
+            sessions: UserSessionRecord[];
+            summary: UserSessionSummary;
+            currentSessionId: string | null;
+          }>('/api/session-history'),
         ]);
         setUsers(uRes.users);
         setEmployees(eRes.employees);
+        setSessionHistory(sRes.sessions);
+        setSessionSummary(sRes.summary);
+        setCurrentSessionId(sRes.currentSessionId);
       } else if (mode === 'audit-logs') {
-        const res = await apiFetch<{ logs: typeof logs; migrations: typeof migrations }>('/api/audit-logs');
+        const [res, sRes] = await Promise.all([
+          apiFetch<{ logs: typeof logs; migrations: typeof migrations }>('/api/audit-logs'),
+          apiFetch<{
+            sessions: UserSessionRecord[];
+            summary: UserSessionSummary;
+            currentSessionId: string | null;
+          }>('/api/session-history'),
+        ]);
         setLogs(res.logs);
         setMigrations(res.migrations);
+        setSessionHistory(sRes.sessions);
+        setSessionSummary(sRes.summary);
+        setCurrentSessionId(sRes.currentSessionId);
       } else if (mode === 'settings') {
-        const [sRes, gsRes, bkpRes, drvRes, empRes] = await Promise.all([
+        const [sRes, gsRes, bkpRes, drvRes, empRes, wsStatus] = await Promise.all([
           apiFetch<{ settings: SalonSettings }>('/api/settings'),
           apiFetch<{ code: string }>('/api/workspace/apps-script'),
           apiFetch<{ backups: typeof backups }>('/api/backups'),
@@ -237,12 +329,17 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             driveFiles: typeof driveFiles;
           }>('/api/workspace/drive/documents'),
           apiFetch<{ employees: EmployeeRecord[] }>('/api/employees'),
+          apiFetch<NonNullable<typeof workspaceStatus>>('/api/workspace/status'),
         ]);
         setSettings(sRes.settings);
         setAppsScriptCode(gsRes.code);
         setBackups(bkpRes.backups);
         setDriveDocs(drvRes.documents);
         setDriveRootFolderId(drvRes.googleDriveFolderId || '');
+        setWorkspaceStatus(wsStatus);
+        setLinkSheetIdInput(wsStatus.linkedSpreadsheetId || sRes.settings.googleSpreadsheetId || '');
+        setLinkDriveFolderInput(wsStatus.linkedDriveFolderId || drvRes.googleDriveFolderId || '');
+        setLinkAppsScriptUrlInput(wsStatus.appsScriptUrl || sRes.settings.googleAppsScriptUrl || '');
         if (drvRes.driveFiles?.length) {
           setDriveFiles(drvRes.driveFiles);
         }
@@ -256,6 +353,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   useEffect(() => {
     void load();
   }, [mode, googleConnected]);
+
+  useEffect(() => {
+    if (mode === 'users' || mode === 'audit-logs') {
+      void loadSessionHistory(sessionStatusFilter, sessionSearch);
+    }
+  }, [sessionStatusFilter, sessionSearch]);
 
   const handleDriveFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -436,6 +539,23 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
         await apiFetch(`/api/users/${u.id}`, { method: 'DELETE' });
         setMsg(`Deleted user account ${u.email}.`);
         await load();
+      },
+    });
+  };
+
+  const handleRevokeSession = (s: UserSessionRecord) => {
+    if (!isOwner) return;
+    setError('');
+    setMsg('');
+    setConfirmAction({
+      title: `Revoke Active Session for ${s.userName || s.email}?`,
+      description: `Immediately terminates this session (${s.email}, signed in ${new Date(s.loginAt).toLocaleString()}). They will be forced to sign in again.`,
+      confirmLabel: 'Revoke Session',
+      destructive: true,
+      run: async () => {
+        await apiFetch(`/api/session-history/${s.id}/revoke`, { method: 'POST' });
+        setMsg(`Revoked active session for ${s.email}.`);
+        await loadSessionHistory();
       },
     });
   };
@@ -801,54 +921,106 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               </form>
             </div>
           )}
+          <UserSessionHistoryPanel
+            sessions={sessionHistory}
+            summary={sessionSummary}
+            currentSessionId={currentSessionId}
+            statusFilter={sessionStatusFilter}
+            search={sessionSearch}
+            loading={loadingSessions}
+            isOwner={isOwner}
+            onStatusFilterChange={setSessionStatusFilter}
+            onSearchChange={setSessionSearch}
+            onRefresh={() => void loadSessionHistory()}
+            onRevoke={handleRevokeSession}
+          />
         </div>
       )}
 
       {/* AUDIT LOGS */}
       {mode === 'audit-logs' && (
         <div className="space-y-6">
-          <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-3">
-            <h3 className="text-base font-bold">Immutable Audit Trail</h3>
-            <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
-                    <th className="py-2.5 px-3">Timestamp</th>
-                    <th className="py-2.5 px-3">User (Role)</th>
-                    <th className="py-2.5 px-3">Action</th>
-                    <th className="py-2.5 px-3">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1D1717]/10">
-                  {logs.map((l) => (
-                    <tr key={l.id}>
-                      <td className="py-2 px-3 font-mono whitespace-nowrap">
-                        {new Date(l.timestamp).toLocaleString()}
-                      </td>
-                      <td className="py-2 px-3 whitespace-nowrap">
-                        {l.userName} ({l.userRole})
-                      </td>
-                      <td className="py-2 px-3 font-mono font-semibold text-[#E83B84]">{l.action}</td>
-                      <td className="py-2 px-3 text-[#1D1717]/80">{l.details}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="flex flex-wrap items-center gap-2 p-1 bg-white border border-[#1D1717]/10 rounded-xl w-fit">
+            <button
+              type="button"
+              onClick={() => setAuditTab('audit')}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+                auditTab === 'audit' ? 'bg-[#E83B84] text-white' : 'text-[#1D1717]/70'
+              }`}
+            >
+              Immutable Audit Trail
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuditTab('sessions')}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+                auditTab === 'sessions' ? 'bg-[#E83B84] text-white' : 'text-[#1D1717]/70'
+              }`}
+            >
+              User Session History ({sessionSummary.suspiciousCount > 0 ? `${sessionSummary.suspiciousCount} alerts` : sessionSummary.totalEvents})
+            </button>
           </div>
 
-          {migrations.length > 0 && (
-            <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-3">
-              <h3 className="text-base font-bold">Excel Historical Migration Logs</h3>
-              {migrations.map((m) => (
-                <div key={m.id} className="p-3 rounded-xl bg-[#F8EEEB] text-xs flex justify-between">
-                  <div>
-                    <strong>{m.fileName}</strong> &middot; {m.recordsImported} records imported ({m.sheetsImported.join(', ')})
-                  </div>
-                  <div className="font-mono text-[#1D1717]/65">Backup: {m.backupId}</div>
+          {auditTab === 'audit' ? (
+            <>
+              <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-3">
+                <h3 className="text-base font-bold">Immutable Audit Trail</h3>
+                <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
+                        <th className="py-2.5 px-3">Timestamp</th>
+                        <th className="py-2.5 px-3">User (Role)</th>
+                        <th className="py-2.5 px-3">Action</th>
+                        <th className="py-2.5 px-3">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1D1717]/10">
+                      {logs.map((l) => (
+                        <tr key={l.id}>
+                          <td className="py-2 px-3 font-mono whitespace-nowrap">
+                            {new Date(l.timestamp).toLocaleString()}
+                          </td>
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            {l.userName} ({l.userRole})
+                          </td>
+                          <td className="py-2 px-3 font-mono font-semibold text-[#E83B84]">{l.action}</td>
+                          <td className="py-2 px-3 text-[#1D1717]/80">{l.details}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-            </div>
+              </div>
+
+              {migrations.length > 0 && (
+                <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-3">
+                  <h3 className="text-base font-bold">Excel Historical Migration Logs</h3>
+                  {migrations.map((m) => (
+                    <div key={m.id} className="p-3 rounded-xl bg-[#F8EEEB] text-xs flex justify-between">
+                      <div>
+                        <strong>{m.fileName}</strong> &middot; {m.recordsImported} records imported ({m.sheetsImported.join(', ')})
+                      </div>
+                      <div className="font-mono text-[#1D1717]/65">Backup: {m.backupId}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <UserSessionHistoryPanel
+              sessions={sessionHistory}
+              summary={sessionSummary}
+              currentSessionId={currentSessionId}
+              statusFilter={sessionStatusFilter}
+              search={sessionSearch}
+              loading={loadingSessions}
+              isOwner={isOwner}
+              onStatusFilterChange={setSessionStatusFilter}
+              onSearchChange={setSessionSearch}
+              onRefresh={() => void loadSessionHistory()}
+              onRevoke={handleRevokeSession}
+            />
           )}
         </div>
       )}
@@ -1112,6 +1284,96 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 </div>
               </div>
 
+              {/* Official Promotional Banner & Background Photo Previews */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 rounded-2xl bg-[#F8EEEB]/80 border border-[#1D1717]/10 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-[#1D1717] flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-[#E83B84]" /> Official Promotional Banner
+                      </span>
+                      <p className="text-[11px] text-[#1D1717]/60 mt-0.5">
+                        Sign-in showcase &amp; services catalog ({settings.audienceTagline || 'For Him · For Her · For Everyone'}).
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettings({
+                          ...settings,
+                          promotionalBannerUrl: '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-white border border-[#1D1717]/15 text-[11px] font-semibold hover:bg-[#F3BFD3]/30 cursor-pointer"
+                    >
+                      Use Default Banner
+                    </button>
+                  </div>
+                  {(settings.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg') && (
+                    <div className="rounded-xl overflow-hidden border border-[#1D1717]/10 bg-white">
+                      <img
+                        src={settings.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg'}
+                        alt="Trendy Unisex Salon Promotional Banner"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-44 object-contain bg-[#F8EEEB]/40 block"
+                      />
+                    </div>
+                  )}
+                  <input
+                    value={settings.promotionalBannerUrl || ''}
+                    onChange={(e) => setSettings({ ...settings, promotionalBannerUrl: e.target.value })}
+                    placeholder="/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg"
+                    className="w-full px-3 py-1.5 rounded-xl border border-[#1D1717]/15 bg-white font-mono text-[11px]"
+                  />
+                </div>
+
+                <div className="p-4 rounded-2xl bg-[#F8EEEB]/80 border border-[#1D1717]/10 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-[#1D1717] flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-[#E83B84]" /> Salon Background Photo
+                      </span>
+                      <p className="text-[11px] text-[#1D1717]/60 mt-0.5">
+                        Displays as the sign-in hero &amp; workspace ambient background picture.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettings({
+                          ...settings,
+                          backgroundImageUrl:
+                            '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-white border border-[#1D1717]/15 text-[11px] font-semibold hover:bg-[#F3BFD3]/30 cursor-pointer"
+                    >
+                      Use Storefront Photo
+                    </button>
+                  </div>
+                  {(settings.backgroundImageUrl ||
+                    '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg') && (
+                    <div className="rounded-xl overflow-hidden border border-[#1D1717]/10 bg-white">
+                      <img
+                        src={
+                          settings.backgroundImageUrl ||
+                          '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg'
+                        }
+                        alt="Trendy Unisex Salon Storefront Background"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-44 object-cover bg-[#F8EEEB]/40 block"
+                      />
+                    </div>
+                  )}
+                  <input
+                    value={settings.backgroundImageUrl || ''}
+                    onChange={(e) => setSettings({ ...settings, backgroundImageUrl: e.target.value })}
+                    placeholder="/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg"
+                    className="w-full px-3 py-1.5 rounded-xl border border-[#1D1717]/15 bg-white font-mono text-[11px]"
+                  />
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block font-semibold mb-1">Business Name</label>
@@ -1129,6 +1391,24 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
                   />
                 </div>
+                <div>
+                  <label className="block font-semibold mb-1">Audience Positioning</label>
+                  <input
+                    value={settings.audienceTagline || ''}
+                    onChange={(e) => setSettings({ ...settings, audienceTagline: e.target.value })}
+                    placeholder="For Him · For Her · For Everyone"
+                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Social Handle (TikTok · Instagram · Facebook)</label>
+                  <input
+                    value={settings.socialHandle || ''}
+                    onChange={(e) => setSettings({ ...settings, socialHandle: e.target.value })}
+                    placeholder="@Trendyunisex.salon"
+                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
+                  />
+                </div>
                 <div className="sm:col-span-2">
                   <label className="block font-semibold mb-1">Location Address</label>
                   <input
@@ -1138,11 +1418,11 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold mb-1">Phone</label>
+                  <label className="block font-semibold mb-1">Booking Phone</label>
                   <input
                     value={settings.phone}
                     onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
+                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
                   />
                 </div>
                 <div>
@@ -1176,6 +1456,14 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               </div>
 
               <div className="space-y-2 pt-2 border-t border-[#1D1717]/10">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.walkInsWelcome ?? true}
+                    onChange={(e) => setSettings({ ...settings, walkInsWelcome: e.target.checked })}
+                  />
+                  <span>Walk-Ins Welcome (show walk-in invitation across salon &amp; booking headers)</span>
+                </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1226,18 +1514,26 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             </form>
           )}
 
-          {settingsTab === 'workspace' && settings && (
+          {settingsTab === 'workspace' && settings && (() => {
+            const hasAppsScriptBridge = Boolean(
+              workspaceStatus?.appsScriptConfigured || settings.googleAppsScriptUrl
+            );
+            const canAccessCloudWorkspace =
+              googleConnected ||
+              Boolean(workspaceStatus?.serverCredentialsConfigured) ||
+              hasAppsScriptBridge;
+            return (
             <div className="space-y-6">
               <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
                     <h3 className="text-base font-bold flex items-center gap-2">
-                      <Cloud className="w-4 h-4 text-[#E83B84]" /> Google Sheets &amp; Google Drive Integration
+                      <Cloud className="w-4 h-4 text-[#E83B84]" /> Google Sheets Database &amp; Google Drive Storage
                     </h3>
                     <p className="text-xs text-[#1D1717]/65 mt-0.5">
-                      {googleConnected
-                        ? 'Google Workspace connected. You can create, sync, inspect Sheets tabs, and upload backups to Google Drive.'
-                        : 'Authorize Google Workspace to create and synchronize your live salon Google Sheet and Drive backups.'}
+                      {canAccessCloudWorkspace
+                        ? 'Connected to Google Sheets & Drive. Changes sync to your linked spreadsheet and media uploads store in Google Drive.'
+                        : 'Use the Apps Script Web App Bridge below (no Google Service Account needed) or connect Google Workspace OAuth to persist your database in Google Sheets and files in Google Drive.'}
                     </p>
                   </div>
                   {!googleConnected && (
@@ -1250,35 +1546,246 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   )}
                 </div>
 
-                {settings.googleSpreadsheetId && (
-                  <div className="p-3.5 rounded-xl bg-[#F8EEEB] text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <strong>Linked Spreadsheet ID:</strong>{' '}
-                      <span className="font-mono">{settings.googleSpreadsheetId}</span>
-                      {settings.lastSheetsSyncAt && (
-                        <span className="text-[#1D1717]/60 ml-2">
-                          &middot; Last synced {new Date(settings.lastSheetsSyncAt).toLocaleString()}
+                {workspaceStatus && (
+                  <div className="p-3.5 rounded-xl bg-[#F8EEEB] text-xs flex flex-wrap items-center gap-x-3 gap-y-1 text-[#1D1717]/80">
+                    <span>
+                      <strong>Runtime:</strong>{' '}
+                      <span className="font-mono uppercase">{workspaceStatus.platform}</span>
+                    </span>
+                    <span aria-hidden="true">&middot;</span>
+                    <span>
+                      <strong>Server Cloud Auth:</strong>{' '}
+                      <span className="font-mono">
+                        {workspaceStatus.serverCredentialsConfigured
+                          ? workspaceStatus.serverCredentialMode === 'apps_script'
+                            ? 'Apps Script Web App (No Service Account)'
+                            : workspaceStatus.serverCredentialMode
+                          : 'Browser OAuth'}
+                      </span>
+                    </span>
+                    {settings.googleSpreadsheetId && (
+                      <>
+                        <span aria-hidden="true">&middot;</span>
+                        <span className="inline-flex items-center gap-1.5">
+                          <strong>Sheet ID:</strong>{' '}
+                          <span className="font-mono">{settings.googleSpreadsheetId}</span>
+                          <a
+                            href={
+                              settings.googleSpreadsheetUrl ||
+                              `https://docs.google.com/spreadsheets/d/${settings.googleSpreadsheetId}/edit`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-0.5 text-[#E83B84] hover:underline font-semibold"
+                          >
+                            Open <ExternalLink className="w-3 h-3" />
+                          </a>
                         </span>
-                      )}
-                    </div>
+                      </>
+                    )}
+                    {settings.lastSheetsSyncAt && (
+                      <>
+                        <span aria-hidden="true">&middot;</span>
+                        <span className="text-[#1D1717]/60">
+                          Synced {new Date(settings.lastSheetsSyncAt).toLocaleString()}
+                        </span>
+                      </>
+                    )}
                   </div>
                 )}
 
+                {/* Zero-Service-Account Apps Script Web App Bridge */}
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setError('');
+                    setMsg('');
+                    setTestingAppsScript(true);
+                    try {
+                      const res = await apiFetch<{
+                        ok: boolean;
+                        spreadsheetId: string;
+                        rootFolderId: string;
+                      }>('/api/workspace/apps-script/test', {
+                        method: 'POST',
+                        body: JSON.stringify({ url: linkAppsScriptUrlInput }),
+                      });
+                      setLegacyWorkbookScan(null);
+                      setSelectedLegacyTabs([]);
+                      setMsg(
+                        `Apps Script Web App verified & linked! Sheet ID: ${res.spreadsheetId || 'bound'} · Drive Folder: ${res.rootFolderId || 'auto'}`
+                      );
+                      await load();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Apps Script connection failed.');
+                    } finally {
+                      setTestingAppsScript(false);
+                    }
+                  }}
+                  className="p-4 rounded-xl border border-[#E83B84]/30 bg-[#F3BFD3]/15 space-y-2.5 text-xs"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="font-bold text-[#1D1717]">
+                      Recommended for Vercel (No Google Service Account Required): Apps Script Web App Bridge
+                    </div>
+                    {hasAppsScriptBridge && (
+                      <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-semibold w-fit">
+                        Bridge Active
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-[#1D1717]/70 leading-relaxed">
+                    <strong>Starting fresh with a new Google Sheet:</strong> Open{' '}
+                    <a
+                      href="https://sheets.new"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[#E83B84] underline font-semibold"
+                    >
+                      sheets.new
+                    </a>{' '}
+                    to create a blank Google Sheet &rarr; <strong>Extensions &rarr; Apps Script</strong>, paste the latest{' '}
+                    <strong>Code.gs</strong> below, click <strong>Deploy &rarr; New deployment &rarr; Web app</strong>, set{' '}
+                    <em>Execute as: Me</em> and <strong>Who has access: Anyone</strong> (<em>not</em> &ldquo;Only myself&rdquo; or
+                    &ldquo;Anyone with Google account&rdquo;, otherwise Google returns HTTP 401), then paste the{' '}
+                    <code className="font-mono bg-white/80 px-1 rounded">/exec</code> URL below.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+                    <input
+                      value={linkAppsScriptUrlInput}
+                      onChange={(e) => setLinkAppsScriptUrlInput(e.target.value)}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="flex-1 px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-mono"
+                    />
+                    <button
+                      type="submit"
+                      disabled={testingAppsScript || !linkAppsScriptUrlInput.trim()}
+                      className="px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white font-semibold disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                    >
+                      {testingAppsScript ? 'Testing Bridge...' : 'Test & Link Apps Script'}
+                    </button>
+                    {hasAppsScriptBridge && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setError('');
+                          setMsg('');
+                          await apiFetch('/api/workspace/sheets/link', {
+                            method: 'POST',
+                            body: JSON.stringify({ googleAppsScriptUrl: '' }),
+                          });
+                          setLinkAppsScriptUrlInput('');
+                          setLegacyWorkbookScan(null);
+                          setSelectedLegacyTabs([]);
+                          setMsg('Cleared saved Apps Script URL.');
+                          await load();
+                        }}
+                        className="px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </form>
+
+                {/* Link Existing or Unlink Google Sheet & Drive Folder */}
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setError('');
+                    setMsg('');
+                    try {
+                      await apiFetch('/api/workspace/sheets/link', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          spreadsheetId: linkSheetIdInput,
+                          driveFolderId: linkDriveFolderInput,
+                          googleAppsScriptUrl: linkAppsScriptUrlInput,
+                        }),
+                      });
+                      setLegacyWorkbookScan(null);
+                      setSelectedLegacyTabs([]);
+                      setMsg('Linked Google Spreadsheet ID & Google Drive Folder ID saved.');
+                      await load();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Failed to save links.');
+                    }
+                  }}
+                  className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end p-3.5 rounded-xl border border-[#1D1717]/10 bg-[#F8EEEB]/50 text-xs"
+                >
+                  <div className="md:col-span-4">
+                    <label className="block font-semibold mb-1">Google Spreadsheet ID (Database)</label>
+                    <input
+                      value={linkSheetIdInput}
+                      onChange={(e) => setLinkSheetIdInput(e.target.value)}
+                      placeholder="Paste Spreadsheet ID or full docs.google.com URL"
+                      className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-mono"
+                    />
+                  </div>
+                  <div className="md:col-span-4">
+                    <label className="block font-semibold mb-1">Google Drive Root Folder ID (Storage)</label>
+                    <input
+                      value={linkDriveFolderInput}
+                      onChange={(e) => setLinkDriveFolderInput(e.target.value)}
+                      placeholder="Optional Drive folder ID (auto-created if blank)"
+                      className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-mono"
+                    />
+                  </div>
+                  <div className="md:col-span-4 flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/35 font-semibold cursor-pointer whitespace-nowrap"
+                    >
+                      Save Link
+                    </button>
+                    {settings.googleSpreadsheetId && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setConfirmAction({
+                            title: 'Unlink Current Google Sheet?',
+                            description:
+                              'Removes the link to the currently attached Google Spreadsheet without deleting any data in Google Drive, so you can connect or create a brand-new sheet.',
+                            confirmLabel: 'Unlink Sheet',
+                            run: async () => {
+                              await apiFetch('/api/workspace/sheets/unlink', {
+                                method: 'POST',
+                                body: JSON.stringify({}),
+                              });
+                              setLinkSheetIdInput('');
+                              setLegacyWorkbookScan(null);
+                              setSelectedLegacyTabs([]);
+                              setSheetPreview(null);
+                              setMsg('Unlinked previous Google Sheet. You can now link or create a new Google Sheet.');
+                              await load();
+                            },
+                          })
+                        }
+                        className="px-3 py-2 rounded-xl border border-red-200 bg-white hover:bg-red-50 text-red-700 font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        Unlink Sheet
+                      </button>
+                    )}
+                  </div>
+                </form>
+
                 <div className="flex flex-wrap gap-2.5 text-xs">
                   <button
-                    disabled={!googleConnected}
+                    disabled={!canAccessCloudWorkspace}
                     onClick={() =>
                       setConfirmAction({
                         title: 'Create New Salon Google Spreadsheet?',
                         description:
-                          'This will create a new Google Sheet in your Google Drive with 18 structured Trendy Unisex Salon worksheets and populate your current salon records.',
+                          'Creates a brand-new Google Sheet in your Google Drive with 19 structured Trendy Unisex Salon worksheets (including _SystemState persistence) and populates your current salon records.',
                         confirmLabel: 'Create & Populate Sheet',
                         run: async () => {
                           const res = await apiFetch<{ spreadsheetId: string; sheetCount: number }>(
                             '/api/workspace/sheets/create',
-                            { method: 'POST' }
+                            { method: 'POST', body: JSON.stringify({}) }
                           );
-                          setMsg(`Created Google Spreadsheet (${res.spreadsheetId}) with ${res.sheetCount} tabs.`);
+                          setLegacyWorkbookScan(null);
+                          setSelectedLegacyTabs([]);
+                          setMsg(`Created new Google Spreadsheet (${res.spreadsheetId}) with ${res.sheetCount} tabs.`);
                           await load();
                         },
                       })
@@ -1288,12 +1795,42 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     Create Salon Google Sheet
                   </button>
 
+                  {isOwner && (
+                    <button
+                      disabled={!canAccessCloudWorkspace}
+                      onClick={() =>
+                        setConfirmAction({
+                          title: 'Start Fresh with a Brand-New Google Sheet?',
+                          description:
+                            'Creates a brand-new Google Sheet with 19 clean Trendy Unisex Salon tabs and resets transactions, expenses, appointments, and client history to a clean starter slate (after saving a local backup first). User logins and salon settings are preserved.',
+                          confirmLabel: 'Start Fresh & Create Sheet',
+                          destructive: true,
+                          run: async () => {
+                            const res = await apiFetch<{ spreadsheetId: string; sheetCount: number }>(
+                              '/api/workspace/sheets/create',
+                              { method: 'POST', body: JSON.stringify({ resetClean: true }) }
+                            );
+                            setLegacyWorkbookScan(null);
+                            setSelectedLegacyTabs([]);
+                            setMsg(
+                              `Started fresh! Created clean Google Spreadsheet (${res.spreadsheetId}) with ${res.sheetCount} tabs.`
+                            );
+                            await load();
+                          },
+                        })
+                      }
+                      className="px-4 py-2 rounded-xl border border-[#E83B84]/40 bg-[#F3BFD3]/25 hover:bg-[#F3BFD3]/45 text-[#1D1717] font-semibold disabled:opacity-45 cursor-pointer"
+                    >
+                      Start Fresh (New Clean Sheet)
+                    </button>
+                  )}
+
                   <button
-                    disabled={!googleConnected || !settings.googleSpreadsheetId}
+                    disabled={!canAccessCloudWorkspace || (!settings.googleSpreadsheetId && !hasAppsScriptBridge)}
                     onClick={() =>
                       setConfirmAction({
-                        title: 'Overwrite Google Sheet Tabs with Current Salon Records?',
-                        description: `This will update all 18 worksheet tabs in Spreadsheet ${settings.googleSpreadsheetId} with the current salon database.`,
+                        title: 'Sync All Salon Data to Google Sheets?',
+                        description: `This will update all worksheet tabs in Spreadsheet ${settings.googleSpreadsheetId || 'bound to Apps Script'} with the current salon database.`,
                         confirmLabel: 'Sync to Google Sheets',
                         run: async () => {
                           const res = await apiFetch<{ updatedCells: number; sheetTabs: string[] }>(
@@ -1310,8 +1847,33 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     <RefreshCw className="w-3.5 h-3.5" /> Sync All Tabs Now
                   </button>
 
+                  {isOwner && (
+                    <button
+                      disabled={!canAccessCloudWorkspace || (!settings.googleSpreadsheetId && !hasAppsScriptBridge)}
+                      onClick={() =>
+                        setConfirmAction({
+                          title: 'Restore Full Database from Google Sheets?',
+                          description: `Loads the saved _SystemState snapshot from Spreadsheet ${settings.googleSpreadsheetId || 'bound to Apps Script'} after saving a local safety backup first.`,
+                          confirmLabel: 'Restore from Google Sheets',
+                          destructive: true,
+                          run: async () => {
+                            const res = await apiFetch<{ spreadsheetId: string }>(
+                              '/api/workspace/sheets/restore',
+                              { method: 'POST', body: JSON.stringify({}) }
+                            );
+                            setMsg(`Restored full salon database from Google Sheet ${res.spreadsheetId || 'bound'}.`);
+                            await load();
+                          },
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-semibold disabled:opacity-45 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-[#E83B84]" /> Restore from Sheets
+                    </button>
+                  )}
+
                   <button
-                    disabled={!googleConnected || !settings.googleSpreadsheetId}
+                    disabled={!canAccessCloudWorkspace || (!settings.googleSpreadsheetId && !hasAppsScriptBridge)}
                     onClick={async () => {
                       try {
                         const res = await apiFetch<NonNullable<typeof sheetPreview>>('/api/workspace/sheets/read');
@@ -1326,7 +1888,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   </button>
 
                   <button
-                    disabled={!googleConnected}
+                    disabled={!canAccessCloudWorkspace}
                     onClick={() =>
                       setConfirmAction({
                         title: 'Upload Full Database Backup to Google Drive?',
@@ -1349,7 +1911,136 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   >
                     Backup to Google Drive
                   </button>
+
+                  <button
+                    disabled={!canAccessCloudWorkspace || (!settings.googleSpreadsheetId && !hasAppsScriptBridge) || scanningWorkbook}
+                    onClick={async () => {
+                      setError('');
+                      setMsg('');
+                      setScanningWorkbook(true);
+                      try {
+                        const scan = await apiFetch<NonNullable<typeof legacyWorkbookScan>>(
+                          '/api/workspace/sheets/inspect-workbook',
+                          { method: 'POST', body: JSON.stringify({}) }
+                        );
+                        setLegacyWorkbookScan(scan);
+                        setSelectedLegacyTabs(
+                          scan.tabs
+                            .filter((t) => t.rowCount > 0 && t.detectedType !== 'unknown')
+                            .map((t) => t.name)
+                        );
+                        setMsg(`Scanned ${scan.tabs.length} tab(s) in Google Sheet ${scan.spreadsheetId || ''}.`);
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : 'Failed to scan Google Sheet.');
+                      } finally {
+                        setScanningWorkbook(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#E83B84]/40 bg-[#F3BFD3]/25 hover:bg-[#F3BFD3]/45 text-[#1D1717] font-semibold disabled:opacity-45 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-[#E83B84]" />
+                    {scanningWorkbook ? 'Scanning Old Sheet...' : 'Scan Old Sheet Records'}
+                  </button>
                 </div>
+
+                {/* Legacy Old Google Sheet Scan & Import Panel */}
+                {legacyWorkbookScan && (
+                  <div className="p-4 rounded-xl border border-[#E83B84]/30 bg-[#F8EEEB]/80 space-y-3 text-xs">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-[#1D1717]">
+                          Old Google Sheet Tabs Found ({legacyWorkbookScan.tabs.length})
+                        </div>
+                        <p className="text-[11px] text-[#1D1717]/65">
+                          {legacyWorkbookScan.hasSystemState
+                            ? 'This Google Sheet already stores Trendy Salon state (_SystemState). Select any tabs below to safely merge historical records (duplicates are skipped).'
+                            : 'Select the tabs with your old salon records to import safely with isHistorical=true. Your original sheet tabs will not be erased.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={importingLegacySheet || selectedLegacyTabs.length === 0}
+                        onClick={() =>
+                          setConfirmAction({
+                            title: 'Import Selected Old Google Sheet Records?',
+                            description: `Imports historical records from ${selectedLegacyTabs.length} selected tab(s) into Trendy Unisex Salon after saving a pre-migration backup snapshot. Duplicates are skipped automatically and historical amounts are locked unchanged.`,
+                            confirmLabel: 'Import Old Sheet Records',
+                            run: async () => {
+                              setImportingLegacySheet(true);
+                              try {
+                                const res = await apiFetch<{
+                                  importedCount: number;
+                                  skippedDuplicates: number;
+                                  sheetsImported: string[];
+                                  backupId?: string;
+                                }>('/api/workspace/sheets/import-legacy', {
+                                  method: 'POST',
+                                  body: JSON.stringify({ tabs: selectedLegacyTabs }),
+                                });
+                                setMsg(
+                                  `Imported ${res.importedCount} old record(s) from Google Sheet (${res.sheetsImported.join(', ') || 'none'}). Skipped ${res.skippedDuplicates} duplicates.`
+                                );
+                                await load();
+                              } finally {
+                                setImportingLegacySheet(false);
+                              }
+                            },
+                          })
+                        }
+                        className="px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white font-semibold disabled:opacity-45 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        {importingLegacySheet
+                          ? 'Importing...'
+                          : `Import ${selectedLegacyTabs.length} Selected Tab(s)`}
+                      </button>
+                    </div>
+
+                    <div className="divide-y divide-[#1D1717]/10 bg-white rounded-xl border border-[#1D1717]/10">
+                      {legacyWorkbookScan.tabs.map((tab) => {
+                        const checked = selectedLegacyTabs.includes(tab.name);
+                        const importable = tab.rowCount > 0 && tab.detectedType !== 'unknown';
+                        return (
+                          <label
+                            key={tab.name}
+                            className="flex items-center justify-between gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#F8EEEB]/50"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!importable}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedLegacyTabs((prev) => [...prev, tab.name]);
+                                  } else {
+                                    setSelectedLegacyTabs((prev) => prev.filter((x) => x !== tab.name));
+                                  }
+                                }}
+                              />
+                              <div className="min-w-0">
+                                <div className="font-semibold truncate">{tab.name}</div>
+                                <div className="text-[11px] text-[#1D1717]/55 truncate">
+                                  {tab.headers.slice(0, 5).join(', ') || 'No headers detected'}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="px-2 py-0.5 rounded bg-[#F8EEEB] font-mono text-[11px] capitalize">
+                                {tab.detectedType === 'unknown' ? 'Unmapped' : tab.detectedType}
+                              </span>
+                              <span className="font-mono text-[#1D1717]/70">{tab.rowCount} rows</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                      {legacyWorkbookScan.tabs.length === 0 && (
+                        <div className="p-4 text-center text-[#1D1717]/55">
+                          No data tabs found in this Google Sheet yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {sheetPreview && (
                   <div className="pt-4 border-t border-[#1D1717]/10 space-y-2 text-xs">
@@ -1428,7 +2119,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   </div>
                   <button
                     type="button"
-                    disabled={!googleConnected}
+                    disabled={!canAccessCloudWorkspace}
                     onClick={() =>
                       setConfirmAction({
                         title: 'Sync All Staff Photos & National IDs to Google Drive?',
@@ -1532,7 +2223,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     />
                     <button
                       type="submit"
-                      disabled={!googleConnected || !uploadDataUrl || uploadingDriveDoc}
+                      disabled={!canAccessCloudWorkspace || !uploadDataUrl || uploadingDriveDoc}
                       className="px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white font-semibold disabled:opacity-45 cursor-pointer whitespace-nowrap"
                     >
                       {uploadingDriveDoc ? 'Uploading to Drive...' : 'Upload to Google Drive'}
@@ -1610,7 +2301,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             {(isImage || isPdf) && (
                               <button
                                 type="button"
-                                disabled={!googleConnected || loadingDrivePreviewId === doc.driveFileId}
+                                disabled={!canAccessCloudWorkspace || loadingDrivePreviewId === doc.driveFileId}
                                 onClick={() => void handlePreviewDriveDoc(doc)}
                                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#1D1717]/15 hover:bg-[#F8EEEB] font-semibold disabled:opacity-45 cursor-pointer"
                               >
@@ -1620,7 +2311,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             )}
                             <button
                               type="button"
-                              disabled={!googleConnected || loadingDrivePreviewId === doc.driveFileId}
+                              disabled={!canAccessCloudWorkspace || loadingDrivePreviewId === doc.driveFileId}
                               onClick={() => void handleDownloadDriveDoc(doc)}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#1D1717]/15 hover:bg-[#F8EEEB] font-semibold disabled:opacity-45 cursor-pointer"
                             >
@@ -1638,7 +2329,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                             )}
                             <button
                               type="button"
-                              disabled={!googleConnected}
+                              disabled={!canAccessCloudWorkspace}
                               onClick={() =>
                                 setConfirmAction({
                                   title: `Delete "${doc.name}" from Google Drive?`,
@@ -1714,7 +2405,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 </pre>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {settingsTab === 'migration' && (
             <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
@@ -1726,6 +2418,22 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   Import <span className="font-mono">Trendy_Unisex_Salon_Records.xlsx</span> safely. Existing historical sales, commissions, expenses, and stock records are preserved with{' '}
                   <span className="font-mono">isHistorical=true</span> and never recalculated under new commission or lunch deduction policies.
                 </p>
+              </div>
+
+              <div className="p-4 rounded-xl border border-[#E83B84]/30 bg-[#F3BFD3]/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div>
+                  <div className="font-bold text-[#1D1717]">Already using an old Google Sheet?</div>
+                  <div className="text-[#1D1717]/65">
+                    You do not need to export to Excel—link your old Google Sheet via Apps Script or Google Workspace and import its existing tabs directly.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab('workspace')}
+                  className="px-3.5 py-2 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Open Google Sheet Importer
+                </button>
               </div>
 
               <label className="flex flex-col items-center justify-center p-6 rounded-2xl border-2 border-dashed border-[#E83B84]/40 bg-[#F8EEEB]/60 hover:bg-[#F3BFD3]/20 cursor-pointer text-xs">
@@ -1931,6 +2639,294 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+function formatSessionDuration(loginAt: string, logoutAt?: string): string | null {
+  if (!logoutAt) return null;
+  const diffMs = new Date(logoutAt).getTime() - new Date(loginAt).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return null;
+  const totalMins = Math.floor(diffMs / 60000);
+  if (totalMins < 1) {
+    const secs = Math.max(1, Math.floor(diffMs / 1000));
+    return `${secs}s`;
+  }
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+}
+
+const UserSessionHistoryPanel: React.FC<{
+  sessions: UserSessionRecord[];
+  summary: UserSessionSummary;
+  currentSessionId: string | null;
+  statusFilter: 'all' | SessionEventStatus;
+  search: string;
+  loading: boolean;
+  isOwner: boolean;
+  onStatusFilterChange: (val: 'all' | SessionEventStatus) => void;
+  onSearchChange: (val: string) => void;
+  onRefresh: () => void;
+  onRevoke: (record: UserSessionRecord) => void;
+}> = ({
+  sessions,
+  summary,
+  currentSessionId,
+  statusFilter,
+  search,
+  loading,
+  isOwner,
+  onStatusFilterChange,
+  onSearchChange,
+  onRefresh,
+  onRevoke,
+}) => {
+  const filterOptions: Array<{ id: 'all' | SessionEventStatus; label: string; count: number }> = [
+    { id: 'all', label: 'All Events', count: summary.totalEvents },
+    { id: 'active', label: 'Active', count: summary.activeSessions },
+    { id: 'signed_out', label: 'Signed Out', count: summary.signedOutCount },
+    { id: 'suspicious', label: 'Suspicious', count: summary.suspiciousCount },
+    { id: 'failed_login', label: 'Failed Logins', count: summary.failedAttemptsCount },
+    { id: 'revoked', label: 'Revoked', count: summary.revokedCount },
+  ];
+
+  const renderStatus = (item: UserSessionRecord) => {
+    if (item.suspicious || item.status === 'suspicious') {
+      return (
+        <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 whitespace-nowrap">
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+          Suspicious{item.suspiciousSeverity ? ` (${item.suspiciousSeverity})` : ''}
+        </span>
+      );
+    }
+    if (item.status === 'active') {
+      return (
+        <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700 whitespace-nowrap">
+          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+          Active Session
+        </span>
+      );
+    }
+    if (item.status === 'signed_out') {
+      return (
+        <span className="inline-flex items-center gap-1.5 font-medium text-[#1D1717]/75 whitespace-nowrap">
+          <LogOut className="w-3.5 h-3.5 shrink-0" />
+          Signed Out
+        </span>
+      );
+    }
+    if (item.status === 'revoked') {
+      return (
+        <span className="inline-flex items-center gap-1.5 font-semibold text-amber-800 whitespace-nowrap">
+          <XCircle className="w-3.5 h-3.5 shrink-0" />
+          Revoked
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1.5 font-semibold text-amber-700 whitespace-nowrap">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+        Failed Login
+      </span>
+    );
+  };
+
+  return (
+    <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-bold flex items-center gap-2 text-[#1D1717]">
+            <History className="w-4 h-4 text-[#E83B84]" /> User Session History &amp; Security Monitor
+          </h3>
+          <p className="text-xs text-[#1D1717]/60 mt-0.5">
+            Tracks successful staff logins, logout timestamps, failed credentials, and suspicious security activity.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Summary Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+        <div className="p-3.5 rounded-xl bg-[#F8EEEB]">
+          <div className="text-[#1D1717]/60">Active Sessions</div>
+          <div className="text-lg font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+            {summary.activeSessions}
+          </div>
+        </div>
+        <div className="p-3.5 rounded-xl bg-[#F8EEEB]">
+          <div className="text-[#1D1717]/60">Completed Sign-Outs</div>
+          <div className="text-lg font-bold font-mono tabular-nums text-[#1D1717] mt-0.5">
+            {summary.signedOutCount}
+          </div>
+        </div>
+        <div className="p-3.5 rounded-xl bg-[#F8EEEB]">
+          <div className="text-[#1D1717]/60">Suspicious Attempts</div>
+          <div
+            className={`text-lg font-bold font-mono tabular-nums mt-0.5 ${
+              summary.suspiciousCount > 0 ? 'text-red-700' : 'text-[#1D1717]'
+            }`}
+          >
+            {summary.suspiciousCount}
+          </div>
+        </div>
+        <div className="p-3.5 rounded-xl bg-[#F8EEEB]">
+          <div className="text-[#1D1717]/60">Failed Logins</div>
+          <div
+            className={`text-lg font-bold font-mono tabular-nums mt-0.5 ${
+              summary.failedAttemptsCount > 0 ? 'text-amber-700' : 'text-[#1D1717]'
+            }`}
+          >
+            {summary.failedAttemptsCount}
+          </div>
+        </div>
+      </div>
+
+      {/* Filters & Search */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-[#F8EEEB] rounded-xl w-fit">
+          {filterOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => onStatusFilterChange(opt.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                statusFilter === opt.id
+                  ? 'bg-[#E83B84] text-white'
+                  : 'text-[#1D1717]/75 hover:text-[#1D1717]'
+              }`}
+            >
+              {opt.label} ({opt.count})
+            </button>
+          ))}
+        </div>
+
+        <div className="relative w-full lg:w-72">
+          <Search className="w-3.5 h-3.5 text-[#1D1717]/40 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search staff, email, IP, or detail..."
+            className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#1D1717]/15 text-xs bg-white focus:outline-none focus:border-[#E83B84]"
+          />
+        </div>
+      </div>
+
+      {/* Session History Table */}
+      <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
+        {loading && sessions.length === 0 ? (
+          <div className="space-y-2 py-2">
+            {[1, 2, 3].map((row) => (
+              <div key={row} className="h-10 rounded-lg bg-[#F8EEEB]/70 animate-pulse" />
+            ))}
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className="py-10 text-center text-xs text-[#1D1717]/60">
+            No session history events match the current filter.
+          </div>
+        ) : (
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
+                <th className="py-2.5 px-3">Staff / Email</th>
+                <th className="py-2.5 px-3">Status</th>
+                <th className="py-2.5 px-3">Auth Method</th>
+                <th className="py-2.5 px-3">Login / Event Time</th>
+                <th className="py-2.5 px-3">Logout Time</th>
+                <th className="py-2.5 px-3">IP &amp; Security Detail</th>
+                <th className="py-2.5 px-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#1D1717]/10">
+              {sessions.map((item) => {
+                const duration = formatSessionDuration(item.loginAt, item.logoutAt);
+                const isCurrent = Boolean(currentSessionId && item.sessionId === currentSessionId);
+                return (
+                  <tr
+                    key={item.id}
+                    className={item.suspicious ? 'bg-red-50/40' : 'hover:bg-[#F8EEEB]/40'}
+                  >
+                    <td className="py-2.5 px-3">
+                      <div className="font-semibold text-[#1D1717]">
+                        {item.userName || 'Unidentified User'}
+                        {isCurrent && (
+                          <span className="ml-1.5 text-[11px] font-normal text-[#E83B84]">
+                            (This session)
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] font-mono text-[#1D1717]/65">
+                        {item.email}
+                        {item.role ? ` · ${item.role === 'owner' ? 'Owner / Admin' : item.role}` : ''}
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3">{renderStatus(item)}</td>
+                    <td className="py-2.5 px-3 whitespace-nowrap text-[#1D1717]/75">
+                      {item.authMethod === 'google_workspace'
+                        ? 'Google Workspace'
+                        : item.authMethod === 'credentials'
+                          ? 'Credentials'
+                          : 'Session Token'}
+                    </td>
+                    <td className="py-2.5 px-3 font-mono tabular-nums whitespace-nowrap text-[#1D1717]/80">
+                      {new Date(item.loginAt).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 font-mono tabular-nums whitespace-nowrap text-[#1D1717]/75">
+                      {item.logoutAt ? (
+                        <div>
+                          <div>{new Date(item.logoutAt).toLocaleString()}</div>
+                          {duration && (
+                            <div className="text-[11px] text-[#1D1717]/50 flex items-center gap-1">
+                              <Clock className="w-2.5 h-2.5" /> {duration}
+                            </div>
+                          )}
+                        </div>
+                      ) : item.status === 'active' ? (
+                        <span className="text-emerald-700 font-sans font-medium">In progress</span>
+                      ) : (
+                        <span className="text-[#1D1717]/40">—</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 max-w-xs">
+                      <div className="text-[#1D1717]/85">
+                        {item.reason || 'Session activity recorded'}
+                      </div>
+                      <div className="text-[11px] font-mono text-[#1D1717]/55 truncate">
+                        IP: {item.ipAddress || 'unknown'}
+                        {item.userAgent ? ` · ${item.userAgent}` : ''}
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      {isOwner && item.status === 'active' && !isCurrent ? (
+                        <button
+                          type="button"
+                          onClick={() => onRevoke(item)}
+                          className="px-2.5 py-1 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 text-xs font-semibold cursor-pointer"
+                        >
+                          Revoke
+                        </button>
+                      ) : isCurrent ? (
+                        <span className="text-[11px] text-[#1D1717]/45">Current</span>
+                      ) : (
+                        <span className="text-[11px] text-[#1D1717]/35">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 };

@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getGoogleAccessToken } from './firebaseAuth';
-import type { POSTransactionRecord } from '../types';
+import type { POSTransactionRecord, SalonBranding } from '../types';
 
 let memorySalonToken: string | null = null;
 
@@ -170,20 +170,27 @@ export function exportReportToPdf(
   doc.save(`${title.toLowerCase().replace(/[^a-z0-9]+/g, '_')}.pdf`);
 }
 
-export function downloadReceiptPdf(tx: POSTransactionRecord) {
-  const doc = new jsPDF({ format: [80, 190], unit: 'mm' });
+export function downloadReceiptPdf(tx: POSTransactionRecord, branding?: SalonBranding) {
+  const doc = new jsPDF({ format: [80, 198], unit: 'mm' });
+  const businessName = (branding?.businessName || 'Trendy Unisex Salon').toUpperCase();
+  const tagline = branding?.tagline || 'Where Beauty Meets Style';
+  const phone = branding?.phone || '0740301726';
+  const social = branding?.socialHandle || '@Trendyunisex.salon';
+  const walkIns = branding?.walkInsWelcome !== false;
+
   doc.setFillColor(232, 59, 132);
-  doc.rect(0, 0, 80, 18, 'F');
+  doc.rect(0, 0, 80, 22, 'F');
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(11);
-  doc.text('TRENDY UNISEX SALON', 40, 8, { align: 'center' });
+  doc.text(businessName, 40, 7.5, { align: 'center' });
   doc.setFontSize(7);
-  doc.text('Where Beauty Meets Style', 40, 12.5, { align: 'center' });
-  doc.text("Busia District Rd, Madibira 'A'", 40, 16, { align: 'center' });
+  doc.text(tagline, 40, 12, { align: 'center' });
+  doc.text("Busia District Rd, near ASA Microfinance", 40, 16, { align: 'center' });
+  doc.text(`Book: ${phone}  ·  ${social}`, 40, 19.8, { align: 'center' });
 
   doc.setTextColor(29, 23, 23);
   doc.setFontSize(8);
-  let y = 24;
+  let y = 27;
   doc.text(`Receipt: ${tx.reference}`, 5, y);
   y += 4.5;
   doc.text(`Date: ${tx.date}  ·  Cashier: ${tx.cashierName}`, 5, y);
@@ -243,6 +250,13 @@ export function downloadReceiptPdf(tx: POSTransactionRecord) {
   }
   y += 4;
   doc.setFontSize(7);
-  doc.text('Thank you for choosing Trendy Unisex Salon!', 40, y, { align: 'center' });
+  doc.text(`Thank you for choosing ${branding?.businessName || 'Trendy Unisex Salon'}!`, 40, y, { align: 'center' });
+  y += 3.5;
+  doc.text(
+    `${walkIns ? 'Walk-Ins Welcome  ·  ' : ''}${social} (TikTok · IG · FB)`,
+    40,
+    y,
+    { align: 'center' }
+  );
   doc.save(`receipt_${tx.reference}.pdf`);
 }

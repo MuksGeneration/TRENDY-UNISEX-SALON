@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { DriveDocumentCategory, SalonDatabase } from './types.ts';
 
 export const SALON_DRIVE_ROOT_FOLDER_NAME = 'Trendy Unisex Salon - Records & Media';
@@ -33,9 +34,161 @@ const WORKSHEET_TITLES = [
   'Gift Cards',
   'Audit Logs',
   'Settings',
+  '_SystemState',
 ];
 
-function buildSheetMatrix(db: SalonDatabase): Record<string, (string | number | boolean)[][]> {
+const SYSTEM_STATE_TAB = '_SystemState';
+const STATE_CHUNK_SIZE = 40000;
+
+let cachedServerToken: { token: string; expiresAt: number } | null = null;
+
+function parseServiceAccountCredentials(): { clientEmail: string; privateKey: string } | null {
+  const rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson) as { client_email?: string; private_key?: string };
+      if (parsed.client_email && parsed.private_key) {
+        return {
+          clientEmail: parsed.client_email,
+          privateKey: parsed.private_key.replace(/\\n/g, '\n'),
+        };
+      }
+    } catch {
+      // Fall through to individual env vars
+    }
+  }
+  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim();
+  const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.trim();
+  if (clientEmail && privateKey) {
+    return {
+      clientEmail,
+      privateKey: privateKey.replace(/\\n/g, '\n'),
+    };
+  }
+  return null;
+}
+
+export function getAppsScriptBridgeUrl(settingsUrl?: string): string | undefined {
+  const fromEnv = process.env.GOOGLE_APPS_SCRIPT_URL?.trim();
+  const url = settingsUrl?.trim() || fromEnv;
+  if (!url) return undefined;
+  return url;
+}
+
+export function getServerGoogleCredentialsStatus(settingsAppsScriptUrl?: string): {
+  configured: boolean;
+  mode: 'apps_script' | 'refresh_token' | 'service_account' | 'none';
+} {
+  if (getAppsScriptBridgeUrl(settingsAppsScriptUrl)) {
+    return { configured: true, mode: 'apps_script' };
+  }
+  if (
+    process.env.GOOGLE_CLIENT_ID?.trim() &&
+    process.env.GOOGLE_CLIENT_SECRET?.trim() &&
+    process.env.GOOGLE_REFRESH_TOKEN?.trim()
+  ) {
+    return { configured: true, mode: 'refresh_token' };
+  }
+  if (parseServiceAccountCredentials()) {
+    return { configured: true, mode: 'service_account' };
+  }
+  return { configured: false, mode: 'none' };
+}
+
+function base64UrlEncode(input: string | Buffer): string {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+export async function getServerGoogleAccessToken(): Promise<string | null> {
+  if (cachedServerToken && cachedServerToken.expiresAt > Date.now() + 60_000) {
+    return cachedServerToken.token;
+  }
+
+  const sa = parseServiceAccountCredentials();
+  if (sa) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const header = base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const claimSet = base64UrlEncode(
+      JSON.stringify({
+        iss: sa.clientEmail,
+        scope: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: nowSec + 3600,
+        iat: nowSec,
+      })
+    );
+    const unsignedJwt = `${header}.${claimSet}`;
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(unsignedJwt);
+    const signature = base64UrlEncode(signer.sign(sa.privateKey));
+    const assertion = `${unsignedJwt}.${signature}`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }),
+    });
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      throw new Error(`Service account token exchange failed (${tokenRes.status}): ${errText}`);
+    }
+    const tokenJson = (await tokenRes.json()) as { access_token: string; expires_in?: number };
+    cachedServerToken = {
+      token: tokenJson.access_token,
+      expiresAt: Date.now() + (tokenJson.expires_in || 3500) * 1000,
+    };
+    return cachedServerToken.token;
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN?.trim();
+  if (clientId && clientSecret && refreshToken) {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      throw new Error(`OAuth refresh token exchange failed (${tokenRes.status}): ${errText}`);
+    }
+    const tokenJson = (await tokenRes.json()) as { access_token: string; expires_in?: number };
+    cachedServerToken = {
+      token: tokenJson.access_token,
+      expiresAt: Date.now() + (tokenJson.expires_in || 3500) * 1000,
+    };
+    return cachedServerToken.token;
+  }
+
+  return null;
+}
+
+function encodeSystemStateRows(db: SalonDatabase): (string | number | boolean)[][] {
+  const json = JSON.stringify(db);
+  const chunks: string[] = [];
+  for (let i = 0; i < json.length; i += STATE_CHUNK_SIZE) {
+    chunks.push(json.slice(i, i + STATE_CHUNK_SIZE));
+  }
+  return [
+    ['ChunkIndex', 'UpdatedAt', 'TotalChunks', 'Payload'],
+    ...chunks.map((chunk, idx) => [idx, new Date().toISOString(), chunks.length, chunk]),
+  ];
+}
+
+export function buildSheetMatrix(db: SalonDatabase): Record<string, (string | number | boolean)[][]> {
   return {
     Users: [
       ['ID', 'Name', 'Email', 'Role', 'EmployeeID', 'Active', 'CreatedAt'],
@@ -281,12 +434,17 @@ function buildSheetMatrix(db: SalonDatabase): Record<string, (string | number | 
     Settings: [
       ['Key', 'Value'],
       ['BusinessName', db.settings.businessName],
+      ['Tagline', db.settings.tagline],
+      ['AudienceTagline', db.settings.audienceTagline || 'For Him · For Her · For Everyone'],
       ['Location', db.settings.location],
       ['Currency', db.settings.currency],
       ['Phone', db.settings.phone],
+      ['SocialHandle', db.settings.socialHandle || '@Trendyunisex.salon'],
+      ['WalkInsWelcome', db.settings.walkInsWelcome === false ? 'No' : 'Yes'],
       ['OperatingHours', db.settings.operatingHours],
       ['LastSyncAt', new Date().toISOString()],
     ],
+    [SYSTEM_STATE_TAB]: encodeSystemStateRows(db),
   };
 }
 
@@ -422,6 +580,200 @@ export async function syncDatabaseToGoogleSheet(
   return {
     updatedCells: updateJson.totalUpdatedCells || 0,
     sheetTabs: Object.keys(matrix),
+  };
+}
+
+export async function syncSystemStateOnlyToGoogleSheet(
+  accessToken: string,
+  spreadsheetId: string,
+  db: SalonDatabase
+): Promise<void> {
+  const metaRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets.properties.title`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!metaRes.ok) {
+    const errText = await metaRes.text();
+    throw new Error(`Failed to inspect spreadsheet metadata (${metaRes.status}): ${errText}`);
+  }
+  const meta = (await metaRes.json()) as {
+    sheets?: Array<{ properties?: { title?: string } }>;
+  };
+  const existingTitles = new Set(
+    (meta.sheets || []).map((s) => s.properties?.title).filter((t): t is string => Boolean(t))
+  );
+
+  if (!existingTitles.has(SYSTEM_STATE_TAB)) {
+    const addRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          requests: [{ addSheet: { properties: { title: SYSTEM_STATE_TAB } } }],
+        }),
+      }
+    );
+    if (!addRes.ok) {
+      const errText = await addRes.text();
+      throw new Error(`Failed to create _SystemState tab: ${errText}`);
+    }
+  }
+
+  const values = encodeSystemStateRows(db);
+  await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchClear`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ranges: [`'${SYSTEM_STATE_TAB}'!A1:D5000`] }),
+    }
+  );
+
+  const updateRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        valueInputOption: 'USER_ENTERED',
+        data: [{ range: `'${SYSTEM_STATE_TAB}'!A1`, majorDimension: 'ROWS', values }],
+      }),
+    }
+  );
+  if (!updateRes.ok) {
+    const errText = await updateRes.text();
+    throw new Error(`Failed to save _SystemState snapshot: ${errText}`);
+  }
+}
+
+export async function readDatabaseFromGoogleSheet(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<SalonDatabase | null> {
+  const range = encodeURIComponent(`'${SYSTEM_STATE_TAB}'!A1:D500`);
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${range}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+  if (res.status === 400 || res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to read Google Sheet database state (${res.status}): ${errText}`);
+  }
+  const data = (await res.json()) as { values?: string[][] };
+  const rows = data.values || [];
+  if (rows.length < 2) {
+    return null;
+  }
+  const payload = rows
+    .slice(1)
+    .sort((a, b) => Number(a[0] || 0) - Number(b[0] || 0))
+    .map((r) => r[3] || '')
+    .join('');
+
+  if (!payload.trim()) return null;
+  const parsed = JSON.parse(payload) as SalonDatabase;
+  if (!parsed || !Array.isArray(parsed.users) || !parsed.settings) {
+    return null;
+  }
+  return parsed;
+}
+
+export interface WorkbookReadResult {
+  spreadsheetId?: string;
+  spreadsheetUrl?: string;
+  hasSystemState: boolean;
+  tabSummaries: Array<{ name: string; rowCount: number; headers: string[] }>;
+  sheets: Record<string, Record<string, unknown>[]>;
+}
+
+export async function readWorkbookFromGoogleSheet(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<WorkbookReadResult> {
+  const metaRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=spreadsheetUrl,sheets.properties.title`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!metaRes.ok) {
+    const errText = await metaRes.text();
+    throw new Error(`Unable to inspect Google Spreadsheet (${metaRes.status}): ${errText}`);
+  }
+  const meta = (await metaRes.json()) as {
+    spreadsheetUrl?: string;
+    sheets?: Array<{ properties?: { title?: string } }>;
+  };
+  const allTitles = (meta.sheets || [])
+    .map((s) => s.properties?.title)
+    .filter((t): t is string => Boolean(t));
+  const hasSystemState = allTitles.includes(SYSTEM_STATE_TAB);
+  const dataTabs = allTitles.filter((t) => t !== SYSTEM_STATE_TAB);
+
+  const sheets: Record<string, Record<string, unknown>[]> = {};
+  const tabSummaries: Array<{ name: string; rowCount: number; headers: string[] }> = [];
+
+  if (dataTabs.length > 0) {
+    const rangesQuery = dataTabs
+      .map((t) => `ranges=${encodeURIComponent(`'${t}'!A1:Z5000`)}`)
+      .join('&');
+    const batchRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGet?${rangesQuery}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!batchRes.ok) {
+      const errText = await batchRes.text();
+      throw new Error(`Failed to read Google Sheet tabs (${batchRes.status}): ${errText}`);
+    }
+    const batchJson = (await batchRes.json()) as {
+      valueRanges?: Array<{ range?: string; values?: string[][] }>;
+    };
+    const valueRanges = batchJson.valueRanges || [];
+    for (let idx = 0; idx < dataTabs.length; idx++) {
+      const tabName = dataTabs[idx];
+      const grid = valueRanges[idx]?.values || [];
+      if (grid.length < 2) {
+        const hdr = (grid[0] || []).map((h) => String(h || '').trim()).filter(Boolean);
+        tabSummaries.push({ name: tabName, rowCount: 0, headers: hdr });
+        continue;
+      }
+      const headers = (grid[0] || []).map((h, ci) => String(h || '').trim() || `Column_${ci + 1}`);
+      const objects: Record<string, unknown>[] = [];
+      for (let r = 1; r < grid.length; r++) {
+        const row = grid[r] || [];
+        const obj: Record<string, unknown> = {};
+        let hasContent = false;
+        for (let c = 0; c < headers.length; c++) {
+          const val = row[c] ?? '';
+          if (String(val).trim() !== '') hasContent = true;
+          obj[headers[c]] = val;
+        }
+        if (hasContent) objects.push(obj);
+      }
+      sheets[tabName] = objects;
+      tabSummaries.push({ name: tabName, rowCount: objects.length, headers });
+    }
+  }
+
+  return {
+    spreadsheetId,
+    spreadsheetUrl: meta.spreadsheetUrl,
+    hasSystemState,
+    tabSummaries,
+    sheets,
   };
 }
 
@@ -740,4 +1092,288 @@ export async function listAppDriveFiles(accessToken: string) {
       parents?: string[];
     }>;
   };
+}
+
+function normalizeAndValidateAppsScriptUrl(rawUrl: string): string {
+  const url = rawUrl.trim();
+  if (!url) {
+    throw new Error('Apps Script Web App URL is empty.');
+  }
+  if (url.includes('docs.google.com/spreadsheets/')) {
+    throw new Error(
+      'You pasted a Google Spreadsheet URL into the Apps Script field. Paste the Spreadsheet link/ID in the "Google Spreadsheet ID" field below instead, or deploy Code.gs in Extensions → Apps Script and paste the /exec Web App URL here.'
+    );
+  }
+  if (/^https:\/\/script\.google\.com\/.*\/dev(\?.*)?$/i.test(url)) {
+    throw new Error(
+      'You pasted a "/dev" test deployment URL, which requires a Google login cookie (HTTP 401). In Apps Script, click Deploy → Manage deployments → copy the Web app URL ending in "/exec" with Who has access set to "Anyone".'
+    );
+  }
+  if (/^https:\/\/script\.google\.com\/.*\/edit/i.test(url) || url.includes('/home/projects/')) {
+    throw new Error(
+      'You pasted the Apps Script editor URL instead of the deployed Web App URL. Click Deploy → New deployment → Web app ("Execute as: Me", "Who has access: Anyone") and copy the URL ending in "/exec".'
+    );
+  }
+  return url;
+}
+
+// ==================== GOOGLE APPS SCRIPT WEB APP BRIDGE (NO SERVICE ACCOUNT) ====================
+async function callAppsScriptBridge<T>(
+  bridgeUrl: string,
+  action: string,
+  payload: Record<string, unknown> = {}
+): Promise<T> {
+  const validUrl = normalizeAndValidateAppsScriptUrl(bridgeUrl);
+  const secret = process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || undefined;
+  const res = await fetch(validUrl, {
+    method: 'POST',
+    redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action,
+      ...(secret ? { secret } : {}),
+      ...payload,
+    }),
+  });
+
+  const text = await res.text();
+  const isGoogleLoginHtml =
+    res.status === 401 ||
+    res.status === 403 ||
+    text.includes('ppConfig') ||
+    text.includes('ServiceLogin') ||
+    text.includes('accounts.google.com');
+
+  if (isGoogleLoginHtml) {
+    throw new Error(
+      `Google returned HTTP ${res.status} (Sign-In Required) for this Apps Script URL. Fix: In your Sheet open Extensions → Apps Script → Deploy → Manage deployments → Edit (pencil) → set "Who has access" to "Anyone" (NOT "Only myself" and NOT "Anyone with Google account"), choose "New version", click Deploy, and copy the "/exec" URL. Or leave Apps Script blank, click "Connect Google Workspace", and paste your Sheet URL/ID below.`
+    );
+  }
+
+  if (!res.ok) {
+    throw new Error(`Apps Script bridge HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+
+  let parsed: { ok?: boolean; error?: string } & T;
+  try {
+    parsed = JSON.parse(text) as { ok?: boolean; error?: string } & T;
+  } catch {
+    throw new Error(
+      'Apps Script returned HTML instead of JSON. Ensure the Web App is deployed as a New version with Execute as "Me" and Who has access "Anyone", and that you pasted the "/exec" URL.'
+    );
+  }
+
+  if (parsed.ok === false || parsed.error) {
+    throw new Error(parsed.error || 'Apps Script bridge action failed.');
+  }
+  return parsed;
+}
+
+export async function testAppsScriptBridge(
+  bridgeUrl: string,
+  spreadsheetId?: string
+): Promise<{
+  ok: boolean;
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+  rootFolderId: string;
+  hasSystemState?: boolean;
+  sheetTabs?: Array<{ name: string; rowCount: number; headers?: string[] }>;
+}> {
+  return callAppsScriptBridge(bridgeUrl, 'health', {
+    ...(spreadsheetId ? { spreadsheetId } : {}),
+  });
+}
+
+export async function createNewSheetViaAppsScript(
+  bridgeUrl: string,
+  db: SalonDatabase,
+  title = 'Trendy Unisex Salon — Database'
+): Promise<{
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+  rootFolderId?: string;
+  sheetCount: number;
+}> {
+  const matrix = buildSheetMatrix(db);
+  return callAppsScriptBridge(bridgeUrl, 'createNewSheet', { title, sheets: matrix });
+}
+
+export async function syncDatabaseViaAppsScript(
+  bridgeUrl: string,
+  db: SalonDatabase
+): Promise<{
+  updatedCells: number;
+  sheetTabs: string[];
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+}> {
+  const matrix = buildSheetMatrix(db);
+  return callAppsScriptBridge(bridgeUrl, 'syncMatrix', {
+    spreadsheetId: db.settings.googleSpreadsheetId || undefined,
+    sheets: matrix,
+  });
+}
+
+export async function syncSystemStateOnlyViaAppsScript(
+  bridgeUrl: string,
+  db: SalonDatabase
+): Promise<{
+  updatedCells: number;
+  sheetTabs: string[];
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+}> {
+  return callAppsScriptBridge(bridgeUrl, 'syncMatrix', {
+    spreadsheetId: db.settings.googleSpreadsheetId || undefined,
+    sheets: { [SYSTEM_STATE_TAB]: encodeSystemStateRows(db) },
+  });
+}
+
+export async function readWorkbookViaAppsScript(
+  bridgeUrl: string,
+  spreadsheetId?: string
+): Promise<WorkbookReadResult> {
+  const res = await callAppsScriptBridge<{
+    spreadsheetId?: string;
+    spreadsheetUrl?: string;
+    hasSystemState?: boolean;
+    tabSummaries?: Array<{ name: string; rowCount: number; headers: string[] }>;
+    sheets?: Record<string, Record<string, unknown>[]>;
+  }>(bridgeUrl, 'readWorkbook', {
+    ...(spreadsheetId ? { spreadsheetId } : {}),
+  });
+  return {
+    spreadsheetId: res.spreadsheetId,
+    spreadsheetUrl: res.spreadsheetUrl,
+    hasSystemState: Boolean(res.hasSystemState),
+    tabSummaries: res.tabSummaries || [],
+    sheets: res.sheets || {},
+  };
+}
+
+export async function readDatabaseViaAppsScript(
+  bridgeUrl: string,
+  spreadsheetId?: string
+): Promise<{ db: SalonDatabase | null; spreadsheetId?: string; spreadsheetUrl?: string }> {
+  const res = await callAppsScriptBridge<{
+    rows?: string[][];
+    spreadsheetId?: string;
+    spreadsheetUrl?: string;
+  }>(bridgeUrl, 'readState', {
+    ...(spreadsheetId ? { spreadsheetId } : {}),
+  });
+
+  const rows = res.rows || [];
+  if (rows.length < 2) {
+    return { db: null, spreadsheetId: res.spreadsheetId, spreadsheetUrl: res.spreadsheetUrl };
+  }
+  const payload = rows
+    .slice(1)
+    .sort((a, b) => Number(a[0] || 0) - Number(b[0] || 0))
+    .map((r) => r[3] || '')
+    .join('');
+
+  if (!payload.trim()) {
+    return { db: null, spreadsheetId: res.spreadsheetId, spreadsheetUrl: res.spreadsheetUrl };
+  }
+  const parsed = JSON.parse(payload) as SalonDatabase;
+  if (!parsed || !Array.isArray(parsed.users) || !parsed.settings) {
+    return { db: null, spreadsheetId: res.spreadsheetId, spreadsheetUrl: res.spreadsheetUrl };
+  }
+  return { db: parsed, spreadsheetId: res.spreadsheetId, spreadsheetUrl: res.spreadsheetUrl };
+}
+
+export async function readGoogleSheetTabViaAppsScript(
+  bridgeUrl: string,
+  sheetTitle?: string,
+  spreadsheetId?: string
+): Promise<{ availableTabs: string[]; activeTab: string; rows: string[][] }> {
+  return callAppsScriptBridge(bridgeUrl, 'readSheet', {
+    sheetTitle,
+    ...(spreadsheetId ? { spreadsheetId } : {}),
+  });
+}
+
+export async function uploadBinaryViaAppsScript(
+  bridgeUrl: string,
+  options: {
+    fileName: string;
+    mimeType: string;
+    buffer: Buffer;
+    category: DriveDocumentCategory;
+    description?: string;
+  }
+): Promise<{
+  rootFolderId: string;
+  folderId: string;
+  folderName: string;
+  file: { id: string; name: string; mimeType: string; sizeBytes: number; webViewLink?: string };
+}> {
+  return callAppsScriptBridge(bridgeUrl, 'driveUpload', {
+    fileName: options.fileName,
+    mimeType: options.mimeType,
+    base64Data: options.buffer.toString('base64'),
+    category: options.category,
+    description: options.description || 'Uploaded by Trendy Unisex Salon Management System',
+  });
+}
+
+export async function backupDatabaseViaAppsScript(
+  bridgeUrl: string,
+  db: SalonDatabase,
+  label: string
+): Promise<{ id: string; name: string; webViewLink?: string; rootFolderId: string }> {
+  const fileName = `Trendy_Unisex_Salon_Backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  const res = await uploadBinaryViaAppsScript(bridgeUrl, {
+    fileName,
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(db, null, 2), 'utf8'),
+    category: 'Backup',
+    description: `${label} — Trendy Unisex Salon Management System`,
+  });
+  return {
+    id: res.file.id,
+    name: res.file.name,
+    webViewLink: res.file.webViewLink,
+    rootFolderId: res.rootFolderId,
+  };
+}
+
+export async function fetchDriveMediaViaAppsScript(
+  bridgeUrl: string,
+  fileId: string
+): Promise<{ buffer: Buffer; mimeType: string; name: string }> {
+  const res = await callAppsScriptBridge<{
+    name: string;
+    mimeType: string;
+    base64Data: string;
+  }>(bridgeUrl, 'driveMedia', { fileId });
+  return {
+    buffer: Buffer.from(res.base64Data, 'base64'),
+    mimeType: res.mimeType || 'application/octet-stream',
+    name: res.name || `drive_file_${fileId}`,
+  };
+}
+
+export async function listDriveFilesViaAppsScript(bridgeUrl: string): Promise<{
+  rootFolderId: string;
+  files: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedTime: string;
+    size?: string;
+    webViewLink?: string;
+    parents?: string[];
+  }>;
+}> {
+  return callAppsScriptBridge(bridgeUrl, 'driveList');
+}
+
+export async function deleteDriveFileViaAppsScript(
+  bridgeUrl: string,
+  fileId: string
+): Promise<void> {
+  await callAppsScriptBridge(bridgeUrl, 'driveDelete', { fileId });
 }

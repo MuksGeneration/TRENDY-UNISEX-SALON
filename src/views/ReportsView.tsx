@@ -1,10 +1,30 @@
 import React, { useEffect, useState } from 'react';
 import { FileDown, FileSpreadsheet, Printer } from 'lucide-react';
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { apiFetch, exportReportToPdf, exportRowsToExcel, formatUGX } from '../lib/api';
 import type { CommissionLedgerEntry, EmployeeRecord, ExpenseRecord, POSTransactionRecord, SessionUser } from '../types';
 
+interface MonthlyTrendPoint {
+  month: string;
+  label: string;
+  revenue: number;
+  expenses: number;
+  serviceRevenue: number;
+  retailRevenue: number;
+}
+
 interface ReportsResponse {
   period: { startDate: string; endDate: string };
+  monthlyTrend: MonthlyTrendPoint[];
   salesSummary: {
     transactionCount: number;
     totalBilledSales: number;
@@ -67,11 +87,13 @@ export const ReportsView: React.FC<{ user: SessionUser }> = ({ user }) => {
   const [employeeId, setEmployeeId] = useState('');
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
   const [report, setReport] = useState<ReportsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'pnl' | 'sales' | 'employees' | 'operations'>('pnl');
   const [error, setError] = useState('');
 
   const load = async () => {
     setError('');
+    setLoading(true);
     try {
       const q = new URLSearchParams({ startDate, endDate });
       if (employeeId) q.set('employeeId', employeeId);
@@ -86,6 +108,8 @@ export const ReportsView: React.FC<{ user: SessionUser }> = ({ user }) => {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load reports.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -275,14 +299,27 @@ export const ReportsView: React.FC<{ user: SessionUser }> = ({ user }) => {
         </button>
       </div>
 
+      {loading && !report && (
+        <div className="space-y-6">
+          <div className="h-80 rounded-2xl bg-white border border-[#1D1717]/10 animate-pulse" />
+          <div className="h-72 rounded-2xl bg-white border border-[#1D1717]/10 animate-pulse" />
+        </div>
+      )}
+
       {report && activeTab === 'pnl' && report.financialPnL && (
-        <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
-          <div>
-            <h3 className="text-lg font-bold">Profit &amp; Loss Reconciliation ({startDate} to {endDate})</h3>
-            <p className="text-xs text-[#1D1717]/60">
-              Clearly separates gross sales revenue, lunch deductions, employee commissions, salon share, retail COGS, and operating expenses.
-            </p>
-          </div>
+        <div className="space-y-6">
+          <MonthlyRevenueExpensesChart
+            data={report.monthlyTrend || []}
+            filteredByEmployee={Boolean(employeeId)}
+          />
+
+          <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
+            <div>
+              <h3 className="text-lg font-bold">Profit &amp; Loss Reconciliation ({startDate} to {endDate})</h3>
+              <p className="text-xs text-[#1D1717]/60">
+                Clearly separates gross sales revenue, lunch deductions, employee commissions, salon share, retail COGS, and operating expenses.
+              </p>
+            </div>
           <div className="divide-y divide-[#1D1717]/10 text-sm">
             <PnLRow label="Service Revenue (Gross Billed)" value={formatUGX(report.financialPnL.serviceRevenue)} />
             <PnLRow label="Retail Product Sales" value={formatUGX(report.financialPnL.retailRevenue)} />
@@ -294,6 +331,7 @@ export const ReportsView: React.FC<{ user: SessionUser }> = ({ user }) => {
             <PnLRow label="Less: Operating Expenses (Approved / Active)" value={`-${formatUGX(report.financialPnL.totalExpenses)}`} />
             <PnLRow label="Actual Net Operating Profit" value={formatUGX(report.financialPnL.actualNetProfit)} highlight />
             <PnLRow label="Separate Liability: Active Unredeemed Gift Cards" value={formatUGX(report.financialPnL.giftCardLiability)} />
+          </div>
           </div>
         </div>
       )}
@@ -439,3 +477,156 @@ const PnLRow: React.FC<{ label: string; value: string; bold?: boolean; highlight
     <span className={`font-mono tabular-nums ${highlight ? 'text-[#E83B84] text-base' : ''}`}>{value}</span>
   </div>
 );
+
+function formatCompactUGX(value: number): string {
+  if (Math.abs(value) >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  }
+  if (Math.abs(value) >= 1_000) {
+    return `${Math.round(value / 1_000)}K`;
+  }
+  return String(value);
+}
+
+const MonthlyRevenueExpensesChart: React.FC<{
+  data: MonthlyTrendPoint[];
+  filteredByEmployee: boolean;
+}> = ({ data, filteredByEmployee }) => {
+  const totalRev6M = data.reduce((sum, pt) => sum + pt.revenue, 0);
+  const totalExp6M = data.reduce((sum, pt) => sum + pt.expenses, 0);
+  const net6M = totalRev6M - totalExp6M;
+  const hasAnyData = totalRev6M > 0 || totalExp6M > 0;
+  const periodLabel =
+    data.length >= 2 ? `${data[0].label} – ${data[data.length - 1].label}` : 'Past 6 Months';
+
+  return (
+    <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
+      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-bold text-[#1D1717]">
+            Monthly Revenue vs. Operational Expenses (6-Month Trend)
+          </h3>
+          <p className="text-xs text-[#1D1717]/60 mt-0.5">
+            {periodLabel} &middot;{' '}
+            {filteredByEmployee
+              ? 'Revenue filtered for selected stylist; expenses reflect salon-wide operations'
+              : 'Billed POS revenue compared against approved and active operational expenses'}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono tabular-nums text-[#1D1717]/80 shrink-0">
+          <span>
+            6M Revenue: <strong className="text-[#E83B84]">{formatUGX(totalRev6M)}</strong>
+          </span>
+          <span aria-hidden="true" className="text-[#1D1717]/25">&middot;</span>
+          <span>
+            6M Expenses: <strong className="text-[#1D1717]">{formatUGX(totalExp6M)}</strong>
+          </span>
+          <span aria-hidden="true" className="text-[#1D1717]/25">&middot;</span>
+          <span>
+            Spread:{' '}
+            <strong className={net6M >= 0 ? 'text-emerald-700' : 'text-red-700'}>
+              {formatUGX(net6M)}
+            </strong>
+          </span>
+        </div>
+      </div>
+
+      {!hasAnyData && (
+        <div className="px-4 py-2.5 rounded-xl bg-[#F8EEEB] text-xs text-[#1D1717]/75">
+          No POS sales or operating expenses have been logged in this 6-month window yet. Monthly
+          points update automatically as transactions and expenses are recorded.
+        </div>
+      )}
+
+      <div className="h-72 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 10, right: 16, left: 4, bottom: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(29, 23, 23, 0.08)" vertical={false} />
+            <XAxis
+              dataKey="label"
+              tick={{ fill: '#1D1717', fontSize: 12, opacity: 0.7 }}
+              axisLine={{ stroke: 'rgba(29, 23, 23, 0.15)' }}
+              tickLine={false}
+              dy={6}
+            />
+            <YAxis
+              tickFormatter={formatCompactUGX}
+              tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.65, fontFamily: 'monospace' }}
+              axisLine={false}
+              tickLine={false}
+              width={56}
+            />
+            <Tooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload || payload.length === 0) return null;
+                const pt = payload[0].payload as MonthlyTrendPoint;
+                const diff = pt.revenue - pt.expenses;
+                return (
+                  <div className="bg-white border border-[#1D1717]/15 rounded-xl p-3.5 shadow-sm text-xs space-y-1.5 min-w-[210px]">
+                    <div className="font-bold text-[#1D1717] border-b border-[#1D1717]/10 pb-1">
+                      {label}
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-[#1D1717]/75">Monthly Revenue</span>
+                      <span className="font-mono tabular-nums font-bold text-[#E83B84]">
+                        {formatUGX(pt.revenue)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 text-[11px] text-[#1D1717]/55 pl-2">
+                      <span>Services / Retail</span>
+                      <span className="font-mono tabular-nums">
+                        {formatCompactUGX(pt.serviceRevenue)} / {formatCompactUGX(pt.retailRevenue)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-[#1D1717]/75">Operational Expenses</span>
+                      <span className="font-mono tabular-nums font-bold text-[#1D1717]">
+                        {formatUGX(pt.expenses)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 border-t border-[#1D1717]/10 pt-1">
+                      <span className="font-semibold text-[#1D1717]">Net Spread</span>
+                      <span
+                        className={`font-mono tabular-nums font-bold ${
+                          diff >= 0 ? 'text-emerald-700' : 'text-red-700'
+                        }`}
+                      >
+                        {formatUGX(diff)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+            <Legend
+              verticalAlign="top"
+              align="right"
+              iconType="line"
+              wrapperStyle={{ fontSize: '12px', paddingBottom: '10px' }}
+            />
+            <Line
+              type="monotone"
+              dataKey="revenue"
+              name="Monthly Revenue (UGX)"
+              stroke="#E83B84"
+              strokeWidth={2.5}
+              dot={{ r: 3.5, fill: '#E83B84', strokeWidth: 0 }}
+              activeDot={{ r: 5.5, fill: '#E83B84', stroke: '#FFFFFF', strokeWidth: 2 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="expenses"
+              name="Operational Expenses (UGX)"
+              stroke="#1D1717"
+              strokeWidth={2.25}
+              strokeDasharray="5 4"
+              dot={{ r: 3.5, fill: '#1D1717', strokeWidth: 0 }}
+              activeDot={{ r: 5.5, fill: '#1D1717', stroke: '#FFFFFF', strokeWidth: 2 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+};

@@ -29,6 +29,31 @@ export interface User {
   lastLoginAt?: string;
 }
 
+export type SessionEventStatus =
+  | 'active'
+  | 'signed_out'
+  | 'suspicious'
+  | 'failed_login'
+  | 'revoked';
+
+export interface UserSessionRecord {
+  id: string;
+  sessionId?: string;
+  userId?: string;
+  userName?: string;
+  email: string;
+  role?: UserRole;
+  authMethod: 'credentials' | 'google_workspace' | 'token';
+  status: SessionEventStatus;
+  loginAt: string;
+  logoutAt?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  reason?: string;
+  suspicious: boolean;
+  suspiciousSeverity?: 'low' | 'medium' | 'high';
+}
+
 export type EmployeeStatus = 'Active' | 'On Leave' | 'Inactive';
 
 export interface Employee {
@@ -523,9 +548,15 @@ export interface DriveDocumentRecord {
 export interface SalonSettings {
   businessName: string;
   tagline: string;
+  audienceTagline?: string;
   location: string;
   phone: string;
   email: string;
+  socialHandle?: string;
+  socialPlatforms?: string[];
+  walkInsWelcome?: boolean;
+  promotionalBannerUrl?: string;
+  backgroundImageUrl?: string;
   currency: string;
   operatingHours: string;
   defaultAppointmentDuration: number;
@@ -550,6 +581,7 @@ export interface SalonSettings {
   googleSpreadsheetId?: string;
   googleSpreadsheetUrl?: string;
   googleDriveFolderId?: string;
+  googleAppsScriptUrl?: string;
   lastSheetsSyncAt?: string;
 }
 
@@ -585,6 +617,7 @@ export interface SalonDatabase {
   driveDocuments: DriveDocumentRecord[];
   notifications: NotificationItem[];
   auditLogs: AuditLogEntry[];
+  sessionHistory: UserSessionRecord[];
   migrationLogs: DataMigrationLog[];
   backups: SystemBackupRecord[];
   settings: SalonSettings;

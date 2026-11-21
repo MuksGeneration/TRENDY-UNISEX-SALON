@@ -1,0 +1,681 @@
+{
+  "users": [
+    {
+      "id": "USR-OWNER-01",
+      "name": "David Mukula",
+      "email": "owner@trendysalon.ug",
+      "role": "owner",
+      "passwordHash": "ba627d97768922cfb0c1902ab09398f8:766c780e726fcf7ff0317c6a473f4a8de2d359980aa0c29e263fc0f54fbb63da8d15c39edaaac8462f42c7e8afe2ca6058a518fda496b982d225a1d04d04d5b2",
+      "active": true,
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    },
+    {
+      "id": "USR-MGR-01",
+      "name": "Grace Namukasa",
+      "email": "manager@trendysalon.ug",
+      "role": "manager",
+      "passwordHash": "fa7fdfba3d494467676d0ca8387cb706:b86931b6005229953b26d89d66b99b59bc1c219ff7d74ce84e5af6dbeb627a4c4c101ea17f74874735c41f52b103a9b445b809298ee79df881ff0bb06229c526",
+      "active": true,
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    },
+    {
+      "id": "USR-EMP-01",
+      "name": "Beatrice Okello",
+      "email": "beatrice@trendysalon.ug",
+      "role": "employee",
+      "employeeId": "EMP-001",
+      "passwordHash": "c753365337b5619c1bb3e60c0cea61ec:e539efda7be8bc488ea7270ce64c825c89897501e87d6d20b3eb36799da574411318456804c75be36c20903f05402c9542451a6bf635d2fc37249075b70c5151",
+      "active": true,
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    },
+    {
+      "id": "USR-EMP-02",
+      "name": "Kevin Mugisha",
+      "email": "kevin@trendysalon.ug",
+      "role": "employee",
+      "employeeId": "EMP-002",
+      "passwordHash": "44677de9e17162223735ed5e582839f0:3d732e1b376858a8d852c398b7c31455e95a73444d5f43a046ccd4b32a01fab09cea05ea20276f6186b402d369eb0b9a768287958050a3d955ed585199ea37c0",
+      "active": true,
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    },
+    {
+      "id": "USR-EMP-03",
+      "name": "Fadhila Nantongo",
+      "email": "fadhila@trendysalon.ug",
+      "role": "employee",
+      "employeeId": "EMP-003",
+      "passwordHash": "f027cb46ce24f4dacc7d16a52d1d8bca:e97a8a9e9829d2ca18f165250f7de83a6fcbf14747ace89a5c98ec1bd046ab5e4bc91cc6a1ab8a6f02bd506cd10749dc53ccce06808216cd4bdb69ff4c5ed321",
+      "active": true,
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    }
+  ],
+  "employees": [
+    {
+      "id": "EMP-001",
+      "fullName": "Beatrice Okello",
+      "roleTitle": "Senior Hair Braider & Plaiting Specialist",
+      "phone": "+256 772 410 112",
+      "secondaryPhone": "+256 704 410 112",
+      "email": "beatrice@trendysalon.ug",
+      "nationalId": "CF94012104821K",
+      "homeAddress": "Madibira 'A' Cell, Eastern Division, Busia Municipality",
+      "emergencyContactName": "Esther Akello",
+      "emergencyContactPhone": "+256 772 889 102",
+      "specialties": [
+        "Hair Plaiting",
+        "Braids and Cornrows",
+        "Dreadlocks",
+        "Hair Styling"
+      ],
+      "avatarUrl": "/src/assets/images/stylist_portrait_female_braids_1794932003886.jpg",
+      "status": "Active",
+      "active": true,
+      "hireDate": "2024-03-01",
+      "lastDocumentUpdatedAt": "2026-11-21T12:17:33.733Z",
+      "lunchEligible": true,
+      "defaultShiftStart": "08:00",
+      "defaultShiftEnd": "20:00",
+      "workingDays": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat"
+      ]
+    },
+    {
+      "id": "EMP-002",
+      "fullName": "Kevin Mugisha",
+      "roleTitle": "Master Barber & Grooming Specialist",
+      "phone": "+256 701 889 234",
+      "secondaryPhone": "+256 782 889 234",
+      "email": "kevin@trendysalon.ug",
+      "nationalId": "CM92045109234M",
+      "homeAddress": "Sofia Ward, Western Division, Busia Municipality",
+      "emergencyContactName": "Samuel Mugisha",
+      "emergencyContactPhone": "+256 774 301 510",
+      "specialties": [
+        "Haircuts",
+        "Beard Trimming",
+        "Kids Cuts",
+        "Grooming",
+        "Dreadlocks"
+      ],
+      "avatarUrl": "/src/assets/images/stylist_portrait_male_barber_1794932004641.jpg",
+      "status": "Active",
+      "active": true,
+      "hireDate": "2024-05-15",
+      "lastDocumentUpdatedAt": "2026-11-21T12:17:33.733Z",
+      "lunchEligible": true,
+      "defaultShiftStart": "08:00",
+      "defaultShiftEnd": "20:30",
+      "workingDays": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ]
+    },
+    {
+      "id": "EMP-003",
+      "fullName": "Fadhila Nantongo",
+      "roleTitle": "Beauty, Wig & Makeup Artist",
+      "phone": "+256 755 302 918",
+      "secondaryPhone": "+256 779 302 918",
+      "email": "fadhila@trendysalon.ug",
+      "nationalId": "CF96088103194F",
+      "homeAddress": "Arubaine Cell, Busia District Road, Busia",
+      "emergencyContactName": "Hassan Ssemakula",
+      "emergencyContactPhone": "+256 752 662 409",
+      "specialties": [
+        "Wig Installation",
+        "Makeup",
+        "Nails",
+        "Facial Treatment",
+        "Blow Dry",
+        "Hair Coloring"
+      ],
+      "avatarUrl": "/src/assets/images/stylist_portrait_beauty_artist_1794932004081.jpg",
+      "status": "Active",
+      "active": true,
+      "hireDate": "2024-08-10",
+      "lastDocumentUpdatedAt": "2026-11-21T12:17:33.733Z",
+      "lunchEligible": true,
+      "defaultShiftStart": "08:30",
+      "defaultShiftEnd": "20:00",
+      "workingDays": [
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ]
+    }
+  ],
+  "schedules": [],
+  "attendance": [],
+  "leaves": [],
+  "customers": [],
+  "customerNotes": [],
+  "customerFeedback": [],
+  "serviceCategories": [
+    {
+      "id": "CAT-PLAIT",
+      "name": "Hair Plaiting",
+      "commissionRate": 0.5,
+      "description": "All plaiting hair styles (50% commission)"
+    },
+    {
+      "id": "CAT-BLOW",
+      "name": "Blow Dry",
+      "commissionRate": 0.3,
+      "description": "Blow dry & heat styling (30% commission)"
+    },
+    {
+      "id": "CAT-STYLE",
+      "name": "Hair Styling",
+      "commissionRate": 0.4,
+      "description": "General salon hair styling (40%)"
+    },
+    {
+      "id": "CAT-BRAIDS",
+      "name": "Braids and Cornrows",
+      "commissionRate": 0.4,
+      "description": "Box braids, knotless, cornrows (40%)"
+    },
+    {
+      "id": "CAT-WIG",
+      "name": "Wig Installation",
+      "commissionRate": 0.4,
+      "description": "Lace frontal & closure installation (40%)"
+    },
+    {
+      "id": "CAT-MAKEUP",
+      "name": "Makeup",
+      "commissionRate": 0.4,
+      "description": "Bridal & occasion makeup (40%)"
+    },
+    {
+      "id": "CAT-NAILS",
+      "name": "Nails",
+      "commissionRate": 0.4,
+      "description": "Manicure, pedicure, acrylics, gel (40%)"
+    },
+    {
+      "id": "CAT-FACIAL",
+      "name": "Facial Treatment",
+      "commissionRate": 0.4,
+      "description": "Deep cleansing & facials (40%)"
+    },
+    {
+      "id": "CAT-CUTS",
+      "name": "Haircuts",
+      "commissionRate": 0.4,
+      "description": "Adult unisex haircuts & fades (40%)"
+    },
+    {
+      "id": "CAT-BEARD",
+      "name": "Beard Trimming",
+      "commissionRate": 0.4,
+      "description": "Beard sculpting & hot towel shave (40%)"
+    },
+    {
+      "id": "CAT-COLOR",
+      "name": "Hair Coloring",
+      "commissionRate": 0.4,
+      "description": "Tint, highlights & dye services (40%)"
+    },
+    {
+      "id": "CAT-LOCKS",
+      "name": "Dreadlocks",
+      "commissionRate": 0.4,
+      "description": "Retwist, starter locs & styling (40%)"
+    },
+    {
+      "id": "CAT-KIDS",
+      "name": "Kids Cuts",
+      "commissionRate": 0.4,
+      "description": "Children haircuts & neat trims (40%)"
+    },
+    {
+      "id": "CAT-GROOM",
+      "name": "Grooming",
+      "commissionRate": 0.4,
+      "description": "Complete executive grooming packages (40%)"
+    }
+  ],
+  "services": [
+    {
+      "id": "SRV-001",
+      "name": "Knotless Plaiting (Medium)",
+      "categoryId": "CAT-PLAIT",
+      "categoryName": "Hair Plaiting",
+      "price": 65000,
+      "durationMinutes": 150,
+      "qualifiedEmployeeIds": [
+        "EMP-001"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-002",
+      "name": "African Cornrows Plaiting",
+      "categoryId": "CAT-PLAIT",
+      "categoryName": "Hair Plaiting",
+      "price": 35000,
+      "durationMinutes": 90,
+      "qualifiedEmployeeIds": [
+        "EMP-001"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-003",
+      "name": "Wash & Blow Dry",
+      "categoryId": "CAT-BLOW",
+      "categoryName": "Blow Dry",
+      "price": 25000,
+      "durationMinutes": 45,
+      "qualifiedEmployeeIds": [
+        "EMP-001",
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-004",
+      "name": "Silk Press & Blow Dry",
+      "categoryId": "CAT-BLOW",
+      "categoryName": "Blow Dry",
+      "price": 45000,
+      "durationMinutes": 60,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-005",
+      "name": "Signature Skin Fade Haircut",
+      "categoryId": "CAT-CUTS",
+      "categoryName": "Haircuts",
+      "price": 15000,
+      "durationMinutes": 35,
+      "qualifiedEmployeeIds": [
+        "EMP-002"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-006",
+      "name": "Beard Sculpt & Hot Towel Shave",
+      "categoryId": "CAT-BEARD",
+      "categoryName": "Beard Trimming",
+      "price": 10000,
+      "durationMinutes": 25,
+      "qualifiedEmployeeIds": [
+        "EMP-002"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-007",
+      "name": "Kids Neat Haircut",
+      "categoryId": "CAT-KIDS",
+      "categoryName": "Kids Cuts",
+      "price": 10000,
+      "durationMinutes": 30,
+      "qualifiedEmployeeIds": [
+        "EMP-002"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-008",
+      "name": "Lace Frontal Wig Installation",
+      "categoryId": "CAT-WIG",
+      "categoryName": "Wig Installation",
+      "price": 70000,
+      "durationMinutes": 90,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-009",
+      "name": "Glam Occasion Makeup",
+      "categoryId": "CAT-MAKEUP",
+      "categoryName": "Makeup",
+      "price": 80000,
+      "durationMinutes": 75,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-010",
+      "name": "Gel Manicure & Pedicure",
+      "categoryId": "CAT-NAILS",
+      "categoryName": "Nails",
+      "price": 50000,
+      "durationMinutes": 75,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-011",
+      "name": "Deep Cleansing Facial",
+      "categoryId": "CAT-FACIAL",
+      "categoryName": "Facial Treatment",
+      "price": 60000,
+      "durationMinutes": 60,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-012",
+      "name": "Dreadlocks Retwist & Style",
+      "categoryId": "CAT-LOCKS",
+      "categoryName": "Dreadlocks",
+      "price": 40000,
+      "durationMinutes": 90,
+      "qualifiedEmployeeIds": [
+        "EMP-001",
+        "EMP-002"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-013",
+      "name": "Full Hair Dye & Conditioning",
+      "categoryId": "CAT-COLOR",
+      "categoryName": "Hair Coloring",
+      "price": 55000,
+      "durationMinutes": 90,
+      "qualifiedEmployeeIds": [
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-014",
+      "name": "Executive Grooming Combo",
+      "categoryId": "CAT-GROOM",
+      "categoryName": "Grooming",
+      "price": 30000,
+      "durationMinutes": 60,
+      "qualifiedEmployeeIds": [
+        "EMP-002"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-015",
+      "name": "Signature Hair Styling",
+      "categoryId": "CAT-STYLE",
+      "categoryName": "Hair Styling",
+      "price": 35000,
+      "durationMinutes": 60,
+      "qualifiedEmployeeIds": [
+        "EMP-001",
+        "EMP-003"
+      ],
+      "active": true
+    },
+    {
+      "id": "SRV-016",
+      "name": "Box Braids & Cornrows",
+      "categoryId": "CAT-BRAIDS",
+      "categoryName": "Braids and Cornrows",
+      "price": 60000,
+      "durationMinutes": 150,
+      "qualifiedEmployeeIds": [
+        "EMP-001"
+      ],
+      "active": true
+    }
+  ],
+  "servicePricingHistory": [],
+  "appointments": [],
+  "walkIns": [],
+  "posTransactions": [],
+  "refunds": [],
+  "tips": [],
+  "giftCards": [],
+  "giftCardTransactions": [],
+  "commissionPolicies": [
+    {
+      "id": "POL-2026-01",
+      "effectiveDate": "2026-01-01",
+      "plaitingRate": 0.5,
+      "blowDryRate": 0.3,
+      "defaultOtherRate": 0.4,
+      "productCommissionEnabled": false,
+      "productCommissionRate": 0,
+      "lunchDeductionAmount": 2500,
+      "lunchAllocationMethod": "proportional",
+      "tipPolicy": "direct_to_employee",
+      "approvedBy": "David Mukula (Owner)",
+      "createdAt": "2026-11-21T12:17:33.733Z",
+      "notes": "Official Trendy Unisex Salon policy: Plaiting 50%, Blow Dry 30%, All other services 40%. UGX 2,500 daily lunch deducted once before commission."
+    }
+  ],
+  "lunchDeductions": [],
+  "commissionLedger": [],
+  "commissionPayments": [],
+  "commissionAdjustments": [],
+  "expenses": [],
+  "expenseCategories": [
+    "Rent",
+    "Electricity",
+    "Water",
+    "Internet",
+    "Salaries",
+    "Salon supplies",
+    "Hair products",
+    "Cleaning supplies",
+    "Transport",
+    "Maintenance",
+    "Marketing",
+    "Other expenses"
+  ],
+  "suppliers": [
+    {
+      "id": "SUP-001",
+      "name": "Kampala Beauty Wholesale Ltd",
+      "phone": "+256 772 600 411",
+      "email": "orders@kampalabeauty.ug",
+      "address": "Kikuubo Lane, Kampala"
+    },
+    {
+      "id": "SUP-002",
+      "name": "Busia Salon Supplies & Cosmetics",
+      "phone": "+256 752 310 882",
+      "address": "Busia Main Market Road, Busia"
+    }
+  ],
+  "stockItems": [
+    {
+      "id": "STK-001",
+      "sku": "TUS-BRD-01",
+      "name": "XPression Ultra Braid Pack",
+      "category": "Hair products",
+      "brand": "XPression",
+      "unit": "Pack",
+      "openingQuantity": 30,
+      "currentQuantity": 30,
+      "purchasePrice": 9000,
+      "sellingPrice": 15000,
+      "supplierId": "SUP-001",
+      "supplierName": "Kampala Beauty Wholesale Ltd",
+      "minStockLevel": 8,
+      "isRetail": true,
+      "active": true
+    },
+    {
+      "id": "STK-002",
+      "sku": "TUS-SHM-01",
+      "name": "Moisture Rich Salon Shampoo (1L)",
+      "category": "Shampoos",
+      "brand": "ORS Olive Oil",
+      "unit": "Bottle",
+      "openingQuantity": 12,
+      "currentQuantity": 12,
+      "purchasePrice": 22000,
+      "sellingPrice": 35000,
+      "supplierId": "SUP-001",
+      "supplierName": "Kampala Beauty Wholesale Ltd",
+      "minStockLevel": 4,
+      "isRetail": true,
+      "active": true
+    },
+    {
+      "id": "STK-003",
+      "sku": "TUS-TRT-01",
+      "name": "Deep Repair Hair Treatment Mask",
+      "category": "Hair treatments",
+      "brand": "MegaGrowth",
+      "unit": "Jar",
+      "openingQuantity": 15,
+      "currentQuantity": 15,
+      "purchasePrice": 16000,
+      "sellingPrice": 28000,
+      "supplierId": "SUP-002",
+      "supplierName": "Busia Salon Supplies & Cosmetics",
+      "minStockLevel": 5,
+      "isRetail": true,
+      "active": true
+    },
+    {
+      "id": "STK-004",
+      "sku": "TUS-STL-01",
+      "name": "Edge Control & Shine Gel",
+      "category": "Styling products",
+      "brand": "Ebin New York",
+      "unit": "Jar",
+      "openingQuantity": 20,
+      "currentQuantity": 20,
+      "purchasePrice": 12000,
+      "sellingPrice": 22000,
+      "supplierId": "SUP-001",
+      "supplierName": "Kampala Beauty Wholesale Ltd",
+      "minStockLevel": 6,
+      "isRetail": true,
+      "active": true
+    },
+    {
+      "id": "STK-005",
+      "sku": "TUS-CLN-01",
+      "name": "Clipper Disinfectant & Cool Spray",
+      "category": "Cleaning supplies",
+      "brand": "Andis Cool Care",
+      "unit": "Can",
+      "openingQuantity": 8,
+      "currentQuantity": 8,
+      "purchasePrice": 25000,
+      "sellingPrice": 0,
+      "supplierId": "SUP-002",
+      "supplierName": "Busia Salon Supplies & Cosmetics",
+      "minStockLevel": 3,
+      "isRetail": false,
+      "active": true
+    },
+    {
+      "id": "STK-006",
+      "sku": "TUS-CLR-01",
+      "name": "Permanent Jet Black Hair Color Kit",
+      "category": "Hair colors",
+      "brand": "Dark and Lovely",
+      "unit": "Box",
+      "openingQuantity": 14,
+      "currentQuantity": 14,
+      "purchasePrice": 14000,
+      "sellingPrice": 25000,
+      "supplierId": "SUP-001",
+      "supplierName": "Kampala Beauty Wholesale Ltd",
+      "minStockLevel": 4,
+      "expirationDate": "2027-06-30",
+      "isRetail": true,
+      "active": true
+    }
+  ],
+  "stockMovements": [],
+  "driveDocuments": [],
+  "notifications": [
+    {
+      "id": "NOTIF-INIT-01",
+      "type": "system",
+      "title": "Trendy Unisex Salon System Initialized",
+      "message": "Commission policy active: Plaiting Hair 50%, Blow Dry 30%, Other Services 40% with UGX 2,500 daily lunch deduction before commission.",
+      "severity": "info",
+      "read": false,
+      "targetRoles": [
+        "owner",
+        "manager"
+      ],
+      "createdAt": "2026-11-21T12:17:33.733Z"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "AUD-INIT-01",
+      "timestamp": "2026-11-21T12:17:33.733Z",
+      "userId": "USR-OWNER-01",
+      "userName": "David Mukula",
+      "userRole": "owner",
+      "action": "SYSTEM_INITIALIZED",
+      "entityType": "SalonDatabase",
+      "entityId": "POL-2026-01",
+      "details": "Initialized Trendy Unisex Salon database on 2026-11-21 with clean production catalog and commission rules."
+    }
+  ],
+  "migrationLogs": [],
+  "sessionHistory": [],
+  "backups": [],
+  "settings": {
+    "businessName": "Trendy Unisex Salon",
+    "tagline": "Where Beauty Meets Style",
+    "audienceTagline": "For Him · For Her · For Everyone",
+    "location": "Busia District Road, near ASA Microfinance, Madibira 'A', Uganda",
+    "phone": "0740301726",
+    "email": "info@trendysalon.ug",
+    "socialHandle": "@Trendyunisex.salon",
+    "socialPlatforms": [
+      "TikTok",
+      "Instagram",
+      "Facebook"
+    ],
+    "walkInsWelcome": true,
+    "promotionalBannerUrl": "/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg",
+    "backgroundImageUrl": "/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg",
+    "currency": "UGX",
+    "operatingHours": "Mon - Sun: 08:00 AM - 09:00 PM",
+    "defaultAppointmentDuration": 60,
+    "cancellationPolicy": "Please notify at least 2 hours prior to scheduled appointment time.",
+    "taxEnabled": false,
+    "taxRate": 0,
+    "allowNegativeStockWithApproval": false,
+    "loyaltyPointsPer10k": 10,
+    "loyaltyPointsValueUgx": 500,
+    "receiptFooterMessage": "Thank you for visiting Trendy Unisex Salon — Where Beauty Meets Style! Walk-Ins Welcome.",
+    "whatsappProviderConfigured": false,
+    "smsProviderConfigured": false,
+    "emailProviderConfigured": false,
+    "googleSpreadsheetId": "1LnMogfIEADzej0_yocIr427aetBbMIbptbZlEv1AO_0",
+    "googleDriveFolderId": "1RimnIpW94lIwPcaq6YL33r-Uhf3sS-rV",
+    "googleSpreadsheetUrl": "https://docs.google.com/spreadsheets/d/1LnMogfIEADzej0_yocIr427aetBbMIbptbZlEv1AO_0/edit",
+    "googleAppsScriptUrl": "https://script.google.com/macros/s/AKfycbyquHyATjC80hDFZOCaSndYEOPwJsI0WJIj51IYVPwRhBtx5RzZz9h0n6uyu_fJDEJCFA/exec",
+    "lastSheetsSyncAt": "2026-11-21T12:47:35.869Z"
+  }
+}

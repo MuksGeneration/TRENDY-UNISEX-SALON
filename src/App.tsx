@@ -24,18 +24,31 @@ import { GiftCardsView } from './views/GiftCardsView';
 import { ReportsView } from './views/ReportsView';
 import { AiAssistantView } from './views/AiAssistantView';
 import { AdminViews } from './views/AdminViews';
+import { ClientBookingView } from './views/ClientBookingView';
 import type { NavSection, SalonBranding, SessionUser } from './types';
 
 const DEFAULT_BRANDING: SalonBranding = {
   businessName: 'Trendy Unisex Salon',
   tagline: 'Where Beauty Meets Style',
-  location: "Busia District Road, Madibira 'A'",
+  audienceTagline: 'For Him · For Her · For Everyone',
+  location: "Busia District Road, near ASA Microfinance, Madibira 'A', Uganda",
+  phone: '0740301726',
+  socialHandle: '@Trendyunisex.salon',
+  socialPlatforms: ['TikTok', 'Instagram', 'Facebook'],
+  walkInsWelcome: true,
+  promotionalBannerUrl: '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
+  backgroundImageUrl: '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
   salonLogoUrl: '',
 };
 
 export default function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [showClientBooking, setShowClientBooking] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('view') === 'booking' || params.get('book') === '1';
+  });
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [googleConnected, setGoogleConnected] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
@@ -121,9 +134,27 @@ export default function App() {
   }
 
   if (!user) {
+    if (showClientBooking) {
+      return (
+        <ClientBookingView
+          standalone
+          branding={branding}
+          onBackToLogin={() => {
+            setShowClientBooking(false);
+            if (typeof window !== 'undefined' && window.location.search) {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('view');
+              url.searchParams.delete('book');
+              window.history.replaceState({}, '', url.toString());
+            }
+          }}
+        />
+      );
+    }
     return (
       <LoginView
         branding={branding}
+        onOpenClientBooking={() => setShowClientBooking(true)}
         onSuccess={(loggedInUser, isGoogle) => {
           setUser(loggedInUser);
           if (isGoogle) setGoogleConnected(true);
@@ -151,6 +182,7 @@ export default function App() {
       {activeSection === 'appointments' && (
         <AppointmentsView
           user={user}
+          branding={branding}
           onCheckoutAppointment={(payload) => {
             setPosPrefill(payload);
             setActiveSection('pos');
@@ -160,6 +192,7 @@ export default function App() {
       {activeSection === 'pos' && (
         <PosBillingView
           user={user}
+          branding={branding}
           prefill={posPrefill}
           onClearPrefill={() => setPosPrefill(null)}
         />
@@ -175,7 +208,7 @@ export default function App() {
           onConnectGoogle={handleConnectGoogle}
         />
       )}
-      {activeSection === 'services' && <ServicesView user={user} />}
+      {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
       {(activeSection === 'commissions' ||
         activeSection === 'payments' ||
         activeSection === 'lunch') && (

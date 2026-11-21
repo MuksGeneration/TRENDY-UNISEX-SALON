@@ -1,15 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Edit3 } from 'lucide-react';
+import { Plus, Edit3, Image as ImageIcon } from 'lucide-react';
 import { apiFetch, formatUGX } from '../lib/api';
-import type { ServiceCategory, ServiceItem, SessionUser } from '../types';
+import type { SalonBranding, ServiceCategory, ServiceItem, SessionUser } from '../types';
 
-export const ServicesView: React.FC<{ user: SessionUser }> = ({ user }) => {
+export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBranding }> = ({
+  user,
+  branding,
+}) => {
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [pricingHistory, setPricingHistory] = useState<
     Array<{ id: string; serviceName: string; oldPrice: number; newPrice: number; changedBy: string; changedAt: string }>
   >([]);
   const [catFilter, setCatFilter] = useState('all');
+  const [showBanner, setShowBanner] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<ServiceItem | null>(null);
 
@@ -90,8 +94,47 @@ export const ServicesView: React.FC<{ user: SessionUser }> = ({ user }) => {
 
   const filtered = services.filter((s) => catFilter === 'all' || s.categoryId === catFilter);
 
+  const bannerUrl =
+    branding?.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg';
+
   return (
     <div className="space-y-6">
+      {/* Unboxed Salon Service Menu Header */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-[#1D1717]/10">
+        <div className="space-y-0.5">
+          <div className="text-sm font-bold text-[#1D1717]">
+            {branding?.businessName || 'Trendy Unisex Salon'} &middot; Service Menu &amp; Commission Rates
+          </div>
+          <div className="text-xs text-[#1D1717]/65">
+            {branding?.audienceTagline || 'For Him · For Her · For Everyone'}
+            {branding?.walkInsWelcome !== false ? ' · Walk-Ins Welcome' : ''}
+            {' · '}
+            <span className="font-mono font-semibold text-[#E83B84]">Book: {branding?.phone || '0740301726'}</span>
+            {' · '}
+            {branding?.socialHandle || '@Trendyunisex.salon'} ({(branding?.socialPlatforms || ['TikTok', 'Instagram', 'Facebook']).join(' · ')})
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowBanner((v) => !v)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/30 text-xs font-semibold text-[#1D1717] w-fit cursor-pointer"
+        >
+          <ImageIcon className="w-3.5 h-3.5 text-[#E83B84]" />
+          <span>{showBanner ? 'Hide Service Banner' : 'View Service Banner'}</span>
+        </button>
+      </div>
+
+      {showBanner && bannerUrl && (
+        <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-3">
+          <img
+            src={bannerUrl}
+            alt="Trendy Unisex Salon Services Banner"
+            referrerPolicy="no-referrer"
+            className="w-full max-h-96 object-contain rounded-xl bg-[#F8EEEB]/40 mx-auto block"
+          />
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <select
@@ -99,7 +142,7 @@ export const ServicesView: React.FC<{ user: SessionUser }> = ({ user }) => {
             onChange={(e) => setCatFilter(e.target.value)}
             className="px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white text-xs font-medium"
           >
-            <option value="all">All 14 Service Categories</option>
+            <option value="all">All Service Categories ({categories.length})</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name} ({Math.round(c.commissionRate * 100)}% comm.)

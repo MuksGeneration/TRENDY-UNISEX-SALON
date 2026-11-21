@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, Lock, Mail, Scissors, ChevronDown, ChevronUp } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, Scissors, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
 import { apiFetch, setSalonSessionToken } from '../lib/api';
 import { connectGoogleWorkspace } from '../lib/firebaseAuth';
 import type { SalonBranding, SessionUser } from '../types';
@@ -7,6 +7,7 @@ import type { SalonBranding, SessionUser } from '../types';
 interface LoginViewProps {
   branding?: SalonBranding;
   onSuccess: (user: SessionUser, googleConnected?: boolean) => void;
+  onOpenClientBooking?: () => void;
 }
 
 const STAFF_ROLES_PREVIEW = [
@@ -15,7 +16,7 @@ const STAFF_ROLES_PREVIEW = [
   { role: 'Stylist (Beatrice)', email: 'beatrice@trendysalon.ug', pass: 'TrendyStaff2026!' },
 ];
 
-export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess }) => {
+export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpenClientBooking }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -69,23 +70,34 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess }) => 
 
   const salonName = branding?.businessName || 'Trendy Unisex Salon';
   const salonTagline = branding?.tagline || 'Where Beauty Meets Style';
+  const audienceTagline = branding?.audienceTagline || 'For Him · For Her · For Everyone';
+  const bookingPhone = branding?.phone || '0740301726';
+  const socialHandle = branding?.socialHandle || '@Trendyunisex.salon';
+  const socialPlatforms = (branding?.socialPlatforms || ['TikTok', 'Instagram', 'Facebook']).join(' · ');
+  const walkInsWelcome = branding?.walkInsWelcome !== false;
+  const locationText = branding?.location || "Busia District Road, near ASA Microfinance, Madibira 'A', Uganda";
+  const bannerUrl =
+    branding?.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg';
+  const backgroundUrl =
+    branding?.backgroundImageUrl ||
+    '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg';
 
   return (
     <div className="min-h-screen bg-[#F8EEEB] flex flex-col lg:flex-row">
       {/* Left Brand Editorial Panel */}
-      <div className="relative lg:w-1/2 min-h-[300px] lg:min-h-screen bg-[#1D1717] overflow-hidden flex flex-col justify-between p-8 lg:p-14">
-        {!imgError ? (
+      <div className="relative lg:w-1/2 min-h-[340px] lg:min-h-screen bg-[#1D1717] overflow-hidden flex flex-col justify-between p-7 lg:p-12">
+        {!imgError && backgroundUrl ? (
           <img
-            src="/src/assets/images/salon_login_hero_1794932002861.jpg"
-            alt="Trendy Unisex Salon interior in Madibira 'A', Busia District"
+            src={backgroundUrl}
+            alt="Trendy Unisex Salon storefront on Busia District Road, Madibira 'A'"
             referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
-            className="absolute inset-0 w-full h-full object-cover opacity-65"
+            className="absolute inset-0 w-full h-full object-cover opacity-70"
           />
         ) : (
           <div className="absolute inset-0 bg-gradient-to-br from-[#1D1717] via-[#3A1B29] to-[#E83B84]/40" />
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#1D1717]/95 via-[#1D1717]/45 to-[#1D1717]/60" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#1D1717]/92 via-[#1D1717]/55 to-[#1D1717]/70" />
 
         <div className="relative z-10 flex items-center gap-3">
           {branding?.salonLogoUrl ? (
@@ -104,41 +116,83 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess }) => 
               {salonName}
             </div>
             <div className="text-[#F3BFD3] text-xs">
-              Busia District Road, Madibira &lsquo;A&rsquo;
+              {locationText}
             </div>
           </div>
         </div>
 
-        <div className="relative z-10 max-w-xl mt-12 lg:mt-0">
-          <p className="text-[#F3BFD3] text-sm font-medium tracking-wide mb-3">
-            {salonTagline}
-          </p>
-          <h1 className="text-3xl lg:text-5xl font-bold text-white leading-tight text-balance">
-            Complete Salon Operations, POS &amp; Financial Control.
-          </h1>
-          <p className="text-white/80 text-sm lg:text-base mt-4 leading-relaxed max-w-lg">
-            Unified booking calendar, walk-in queue, split-payment UGX billing, daily lunch &amp;
-            commission ledger, inventory control, and live Google Sheets synchronization.
-          </p>
+        <div className="relative z-10 max-w-xl my-8 lg:my-0 space-y-5">
+          <div>
+            <p className="text-[#F3BFD3] text-xs font-semibold uppercase tracking-wider mb-1.5">
+              {audienceTagline}{walkInsWelcome ? ' · Walk-Ins Welcome' : ''}
+            </p>
+            <p className="text-white/90 text-sm font-medium tracking-wide mb-2">
+              {salonTagline}
+            </p>
+            <h1 className="text-3xl lg:text-4xl font-bold text-white leading-tight text-balance">
+              Complete Salon Operations, POS &amp; Financial Control.
+            </h1>
+            <p className="text-white/80 text-sm mt-3 leading-relaxed max-w-lg">
+              Hair Styling, Braids &amp; Cornrows, Wig Installation, Makeup, Nails, Facial Treatment,
+              Haircuts, Beard Trimming, Hair Coloring, Dreadlocks, Kids Cuts &amp; Grooming.
+            </p>
+          </div>
+
+          {bannerUrl && (
+            <div className="rounded-2xl overflow-hidden border border-white/15 bg-white/5 shadow-lg">
+              <img
+                src={bannerUrl}
+                alt={`${salonName} promotional showcase`}
+                referrerPolicy="no-referrer"
+                className="w-full aspect-[2/1] object-cover block"
+              />
+            </div>
+          )}
         </div>
 
-        <div className="relative z-10 hidden lg:flex items-center gap-4 text-xs text-white/75 border-t border-white/15 pt-5">
-          <span>Near ASA Microfinance, Madibira &lsquo;A&rsquo;, Uganda</span>
+        <div className="relative z-10 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-white/80 border-t border-white/15 pt-4">
+          <span className="font-mono font-semibold text-[#F3BFD3]">Book: {bookingPhone}</span>
+          <span aria-hidden="true">&middot;</span>
+          <span>{socialHandle} ({socialPlatforms})</span>
           <span aria-hidden="true">&middot;</span>
           <span>Currency: Uganda Shillings (UGX)</span>
         </div>
       </div>
 
       {/* Right Sign-In Form */}
-      <div className="lg:w-1/2 flex items-center justify-center p-6 sm:p-10 lg:p-16">
-        <div className="w-full max-w-md bg-white border border-[#1D1717]/10 rounded-2xl p-7 sm:p-9 shadow-sm">
+      <div className="relative lg:w-1/2 flex items-center justify-center p-6 sm:p-10 lg:p-16 overflow-hidden">
+        {!imgError && backgroundUrl && (
+          <>
+            <img
+              src={backgroundUrl}
+              alt=""
+              aria-hidden="true"
+              referrerPolicy="no-referrer"
+              className="absolute inset-0 w-full h-full object-cover opacity-20 pointer-events-none"
+            />
+            <div className="absolute inset-0 bg-[#F8EEEB]/75 pointer-events-none" />
+          </>
+        )}
+        <div className="relative z-10 w-full max-w-md bg-white/95 backdrop-blur-xs border border-[#1D1717]/10 rounded-2xl p-7 sm:p-9 shadow-sm">
           <div className="mb-7">
-            <div className="text-xs font-semibold tracking-wider text-[#E83B84] mb-1.5">
-              TRENDY UNISEX SALON
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-xs font-semibold tracking-wider text-[#E83B84] uppercase">
+                {salonName}
+              </span>
+              {onOpenClientBooking && (
+                <button
+                  type="button"
+                  onClick={onOpenClientBooking}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 border border-[#E83B84]/25 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
+                  <span>Client Booking View</span>
+                </button>
+              )}
             </div>
             <h2 className="text-2xl font-bold text-[#1D1717]">Staff &amp; Management Sign In</h2>
             <p className="text-sm text-[#1D1717]/65 mt-1">
-              Where Beauty Meets Style &middot; Sign in to access your role workspace.
+              {salonTagline} &middot; Sign in to access your role workspace.
             </p>
           </div>
 

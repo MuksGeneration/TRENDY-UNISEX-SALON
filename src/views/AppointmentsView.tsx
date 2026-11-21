@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, Clock, Plus, UserPlus, Send, CheckCircle2, Search } from 'lucide-react';
+import { Calendar, Clock, Plus, UserPlus, Send, CheckCircle2, Search, Copy } from 'lucide-react';
 import { apiFetch, formatUGX } from '../lib/api';
+import { ClientBookingView } from './ClientBookingView';
 import type {
   AppointmentRecord,
   AppointmentStatus,
   CustomerRecord,
   EmployeeRecord,
+  SalonBranding,
   ServiceItem,
   SessionUser,
   WalkInRecord,
@@ -13,6 +15,7 @@ import type {
 
 interface AppointmentsViewProps {
   user: SessionUser;
+  branding?: SalonBranding;
   onCheckoutAppointment: (payload: {
     customerId: string;
     customerName: string;
@@ -36,9 +39,10 @@ const ALL_STATUSES: AppointmentStatus[] = [
 
 export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   user,
+  branding,
   onCheckoutAppointment,
 }) => {
-  const [tab, setTab] = useState<'bookings' | 'walkins'>('bookings');
+  const [tab, setTab] = useState<'bookings' | 'walkins' | 'client-booking'>('bookings');
   const [calendarMode, setCalendarMode] = useState<'day' | 'week' | 'month'>('day');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [stylistFilter, setStylistFilter] = useState('all');
@@ -230,9 +234,22 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Unboxed Booking & Walk-In Contact Line */}
+      <div className="text-xs text-[#1D1717]/70 pb-3 border-b border-[#1D1717]/10 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="font-semibold text-[#1D1717]">
+          Booking Line: <span className="font-mono text-[#E83B84]">{branding?.phone || '0740301726'}</span>
+        </span>
+        <span aria-hidden="true">&middot;</span>
+        <span>{branding?.walkInsWelcome !== false ? 'Walk-Ins Welcome' : 'By Appointment'}</span>
+        <span aria-hidden="true">&middot;</span>
+        <span>{branding?.location || "Busia District Road, near ASA Microfinance, Madibira 'A', Uganda"}</span>
+        <span aria-hidden="true">&middot;</span>
+        <span>{branding?.socialHandle || '@Trendyunisex.salon'}</span>
+      </div>
+
       {/* Header Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-2 p-1 bg-white border border-[#1D1717]/10 rounded-xl w-fit">
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-white border border-[#1D1717]/10 rounded-xl w-fit">
           <button
             onClick={() => setTab('bookings')}
             className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
@@ -249,26 +266,50 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           >
             Walk-In Queue ({walkIns.filter((w) => w.status !== 'Completed' && w.status !== 'Left').length})
           </button>
+          <button
+            onClick={() => setTab('client-booking')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              tab === 'client-booking' ? 'bg-[#E83B84] text-white' : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+            }`}
+          >
+            Client Booking View
+          </button>
         </div>
 
-        {canManage && (
-          <div className="flex items-center gap-2.5">
-            <button
-              onClick={() => setShowWalkInModal(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/40 text-xs font-semibold text-[#1D1717] cursor-pointer whitespace-nowrap"
-            >
-              <UserPlus className="w-3.5 h-3.5 text-[#E83B84]" />
-              <span>Register Walk-In</span>
-            </button>
-            <button
-              onClick={() => setShowBookingModal(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12d73] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Book Appointment</span>
-            </button>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              const link = `${window.location.origin}/?view=booking`;
+              if (navigator.clipboard?.writeText) {
+                void navigator.clipboard.writeText(link);
+              }
+              setFeedbackMsg(`Public Client Booking Link copied: ${link}`);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] text-xs font-semibold text-[#1D1717] cursor-pointer whitespace-nowrap"
+          >
+            <Copy className="w-3.5 h-3.5 text-[#E83B84]" />
+            <span>Copy Client Link</span>
+          </button>
+          {canManage && (
+            <>
+              <button
+                onClick={() => setShowWalkInModal(true)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/40 text-xs font-semibold text-[#1D1717] cursor-pointer whitespace-nowrap"
+              >
+                <UserPlus className="w-3.5 h-3.5 text-[#E83B84]" />
+                <span>Register Walk-In</span>
+              </button>
+              <button
+                onClick={() => setShowBookingModal(true)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12d73] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Book Appointment</span>
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -437,7 +478,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </div>
           )}
         </div>
-      ) : (
+      ) : tab === 'walkins' ? (
         /* WALK-IN QUEUE */
         <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
           <div className="flex items-center justify-between">
@@ -513,6 +554,15 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </div>
           )}
         </div>
+      ) : (
+        <ClientBookingView
+          standalone={false}
+          branding={branding}
+          onBookingCreated={() => {
+            void loadAll();
+            setFeedbackMsg('Client booking submitted and synced with Scheduled Appointments.');
+          }}
+        />
       )}
 
       {/* Book Appointment Modal */}

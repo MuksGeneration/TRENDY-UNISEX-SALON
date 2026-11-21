@@ -1,9 +1,28 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { SalonDatabase, AuditLogEntry, UserRole } from './types.ts';
+import type { SalonDatabase, AuditLogEntry, UserRole, UserSessionRecord } from './types.ts';
+import {
+  getAppsScriptBridgeUrl,
+  getServerGoogleAccessToken,
+  readDatabaseFromGoogleSheet,
+  readDatabaseViaAppsScript,
+  readWorkbookFromGoogleSheet,
+  readWorkbookViaAppsScript,
+  syncDatabaseToGoogleSheet,
+  syncDatabaseViaAppsScript,
+  syncSystemStateOnlyToGoogleSheet,
+  syncSystemStateOnlyViaAppsScript,
+} from './workspaceService.ts';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+export const IS_SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY
+);
+
+const DATA_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'trendy-salon-data')
+  : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'salon-db.json');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
@@ -177,6 +196,8 @@ export function createInitialDatabase(): SalonDatabase {
       { id: 'SRV-012', name: 'Dreadlocks Retwist & Style', categoryId: 'CAT-LOCKS', categoryName: 'Dreadlocks', price: 40000, durationMinutes: 90, qualifiedEmployeeIds: ['EMP-001', 'EMP-002'], active: true },
       { id: 'SRV-013', name: 'Full Hair Dye & Conditioning', categoryId: 'CAT-COLOR', categoryName: 'Hair Coloring', price: 55000, durationMinutes: 90, qualifiedEmployeeIds: ['EMP-003'], active: true },
       { id: 'SRV-014', name: 'Executive Grooming Combo', categoryId: 'CAT-GROOM', categoryName: 'Grooming', price: 30000, durationMinutes: 60, qualifiedEmployeeIds: ['EMP-002'], active: true },
+      { id: 'SRV-015', name: 'Signature Hair Styling', categoryId: 'CAT-STYLE', categoryName: 'Hair Styling', price: 35000, durationMinutes: 60, qualifiedEmployeeIds: ['EMP-001', 'EMP-003'], active: true },
+      { id: 'SRV-016', name: 'Box Braids & Cornrows', categoryId: 'CAT-BRAIDS', categoryName: 'Braids and Cornrows', price: 60000, durationMinutes: 150, qualifiedEmployeeIds: ['EMP-001'], active: true },
     ],
     servicePricingHistory: [],
     appointments: [],
@@ -370,13 +391,20 @@ export function createInitialDatabase(): SalonDatabase {
       },
     ],
     migrationLogs: [],
+    sessionHistory: [],
     backups: [],
     settings: {
       businessName: 'Trendy Unisex Salon',
       tagline: 'Where Beauty Meets Style',
+      audienceTagline: 'For Him · For Her · For Everyone',
       location: "Busia District Road, near ASA Microfinance, Madibira 'A', Uganda",
-      phone: '+256 772 000 100',
+      phone: '0740301726',
       email: 'info@trendysalon.ug',
+      socialHandle: '@Trendyunisex.salon',
+      socialPlatforms: ['TikTok', 'Instagram', 'Facebook'],
+      walkInsWelcome: true,
+      promotionalBannerUrl: '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
+      backgroundImageUrl: '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
       currency: 'UGX',
       operatingHours: 'Mon - Sun: 08:00 AM - 09:00 PM',
       defaultAppointmentDuration: 60,
@@ -386,10 +414,13 @@ export function createInitialDatabase(): SalonDatabase {
       allowNegativeStockWithApproval: false,
       loyaltyPointsPer10k: 10,
       loyaltyPointsValueUgx: 500,
-      receiptFooterMessage: 'Thank you for visiting Trendy Unisex Salon — Where Beauty Meets Style!',
+      receiptFooterMessage: 'Thank you for visiting Trendy Unisex Salon — Where Beauty Meets Style! Walk-Ins Welcome.',
       whatsappProviderConfigured: false,
       smsProviderConfigured: false,
       emailProviderConfigured: false,
+      googleSpreadsheetId: process.env.GOOGLE_SPREADSHEET_ID?.trim() || undefined,
+      googleDriveFolderId: process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() || undefined,
+      googleAppsScriptUrl: process.env.GOOGLE_APPS_SCRIPT_URL?.trim() || undefined,
     },
   };
 }
@@ -404,25 +435,26 @@ function ensureDirectories(): void {
 }
 
 let cachedDb: SalonDatabase | null = null;
+let dbDirty = false;
+let lastCloudHydratedAt = 0;
+let cloudHydrationPromise: Promise<void> | null = null;
+let cloudSyncInFlight: Promise<{ synced: boolean; error?: string }> | null = null;
 
-export function readDb(): SalonDatabase {
-  if (cachedDb) return cachedDb;
-  ensureDirectories();
-  if (!fs.existsSync(DB_FILE)) {
-    const initial = createInitialDatabase();
-    writeDb(initial);
-    return initial;
+function normalizeLoadedDb(db: SalonDatabase): boolean {
+  let modified = false;
+  if (!Array.isArray(db.driveDocuments)) {
+    db.driveDocuments = [];
+    modified = true;
   }
-  const raw = fs.readFileSync(DB_FILE, 'utf8');
-  cachedDb = JSON.parse(raw) as SalonDatabase;
-  if (!Array.isArray(cachedDb.driveDocuments)) {
-    cachedDb.driveDocuments = [];
+  if (!Array.isArray(db.sessionHistory)) {
+    db.sessionHistory = [];
+    modified = true;
   }
-  const hadLegacyReceptionistUsers = cachedDb.users.some(
+  const hadLegacyReceptionistUsers = db.users.some(
     (u) => (u.role as string) === 'receptionist'
   );
   let hadLegacyNotifRoles = false;
-  cachedDb.notifications = cachedDb.notifications.map((n) => {
+  db.notifications = db.notifications.map((n) => {
     if (n.targetRoles.some((r) => (r as string) === 'receptionist')) {
       hadLegacyNotifRoles = true;
       return {
@@ -432,19 +464,273 @@ export function readDb(): SalonDatabase {
     }
     return n;
   });
-  if (hadLegacyReceptionistUsers || hadLegacyNotifRoles) {
-    cachedDb.users = cachedDb.users.filter((u) => (u.role as string) !== 'receptionist');
-    writeDb(cachedDb);
+  let settingsBackfilled = false;
+  if (db.settings.phone === '+256 772 000 100') {
+    db.settings.phone = '0740301726';
+    settingsBackfilled = true;
+  }
+  if (!db.settings.socialHandle) {
+    db.settings.socialHandle = '@Trendyunisex.salon';
+    settingsBackfilled = true;
+  }
+  if (!Array.isArray(db.settings.socialPlatforms)) {
+    db.settings.socialPlatforms = ['TikTok', 'Instagram', 'Facebook'];
+    settingsBackfilled = true;
+  }
+  if (!db.settings.audienceTagline) {
+    db.settings.audienceTagline = 'For Him · For Her · For Everyone';
+    settingsBackfilled = true;
+  }
+  if (db.settings.walkInsWelcome === undefined) {
+    db.settings.walkInsWelcome = true;
+    settingsBackfilled = true;
+  }
+  if (!db.settings.promotionalBannerUrl) {
+    db.settings.promotionalBannerUrl = '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg';
+    settingsBackfilled = true;
+  }
+  if (!db.settings.backgroundImageUrl) {
+    db.settings.backgroundImageUrl = '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg';
+    settingsBackfilled = true;
+  }
+  if (process.env.GOOGLE_SPREADSHEET_ID?.trim() && !db.settings.googleSpreadsheetId) {
+    db.settings.googleSpreadsheetId = process.env.GOOGLE_SPREADSHEET_ID.trim();
+    settingsBackfilled = true;
+  }
+  if (process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() && !db.settings.googleDriveFolderId) {
+    db.settings.googleDriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID.trim();
+    settingsBackfilled = true;
+  }
+  if (process.env.GOOGLE_APPS_SCRIPT_URL?.trim() && !db.settings.googleAppsScriptUrl) {
+    db.settings.googleAppsScriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL.trim();
+    settingsBackfilled = true;
+  }
+  if (hadLegacyReceptionistUsers || hadLegacyNotifRoles || settingsBackfilled) {
+    db.users = db.users.filter((u) => (u.role as string) !== 'receptionist');
+    modified = true;
+  }
+  return modified;
+}
+
+export function readDb(): SalonDatabase {
+  if (cachedDb) return cachedDb;
+  ensureDirectories();
+  if (!fs.existsSync(DB_FILE)) {
+    const initial = createInitialDatabase();
+    writeDbLocalOnly(initial);
+    return initial;
+  }
+  const raw = fs.readFileSync(DB_FILE, 'utf8');
+  cachedDb = JSON.parse(raw) as SalonDatabase;
+  if (normalizeLoadedDb(cachedDb)) {
+    writeDbLocalOnly(cachedDb);
   }
   return cachedDb;
 }
 
-export function writeDb(db: SalonDatabase): void {
+function writeDbLocalOnly(db: SalonDatabase): void {
   ensureDirectories();
   const tmpFile = `${DB_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
   fs.renameSync(tmpFile, DB_FILE);
   cachedDb = db;
+}
+
+export function writeDb(db: SalonDatabase): void {
+  writeDbLocalOnly(db);
+  dbDirty = true;
+}
+
+export function isDbDirtyForCloud(): boolean {
+  return dbDirty;
+}
+
+export function markDbCleanFromCloudSync(): void {
+  dbDirty = false;
+}
+
+export async function ensureCloudDbHydrated(): Promise<void> {
+  const currentDb = cachedDb || readDb();
+  const bridgeUrl = getAppsScriptBridgeUrl(currentDb.settings?.googleAppsScriptUrl);
+  const spreadsheetId =
+    currentDb.settings?.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
+  if (!bridgeUrl && !spreadsheetId) return;
+
+  // On serverless, re-hydrate every 15 seconds if not currently dirty so separate Lambda instances stay fresh
+  const ttlMs = IS_SERVERLESS ? 15_000 : 300_000;
+  if (lastCloudHydratedAt > 0 && Date.now() - lastCloudHydratedAt < ttlMs) {
+    return;
+  }
+  if (dbDirty) return;
+
+  if (cloudHydrationPromise) {
+    return cloudHydrationPromise;
+  }
+
+  cloudHydrationPromise = (async () => {
+    try {
+      if (bridgeUrl) {
+        const res = await readDatabaseViaAppsScript(bridgeUrl, spreadsheetId);
+        if (res.spreadsheetId && spreadsheetId && res.spreadsheetId !== spreadsheetId) {
+          console.warn(
+            `Apps Script bridge returned spreadsheet ${res.spreadsheetId}, which does not match configured spreadsheet ${spreadsheetId}. Skipping hydration from mismatched sheet.`
+          );
+          lastCloudHydratedAt = Date.now();
+          return;
+        }
+        if (res.db) {
+          normalizeLoadedDb(res.db);
+          res.db.settings.googleAppsScriptUrl = res.db.settings.googleAppsScriptUrl || bridgeUrl;
+          if (res.spreadsheetId && !res.db.settings.googleSpreadsheetId) {
+            res.db.settings.googleSpreadsheetId = res.spreadsheetId;
+          }
+          if (res.spreadsheetUrl && !res.db.settings.googleSpreadsheetUrl) {
+            res.db.settings.googleSpreadsheetUrl = res.spreadsheetUrl;
+          }
+          if (process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() && !res.db.settings.googleDriveFolderId) {
+            res.db.settings.googleDriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID.trim();
+          }
+          writeDbLocalOnly(res.db);
+          dbDirty = false;
+        } else {
+          const local = readDb();
+          local.settings.googleAppsScriptUrl = bridgeUrl;
+          if (spreadsheetId) {
+            local.settings.googleSpreadsheetId = spreadsheetId;
+          }
+          local.settings.lastSheetsSyncAt = new Date().toISOString();
+
+          const wb = await readWorkbookViaAppsScript(bridgeUrl, spreadsheetId).catch(() => null);
+          if (wb?.spreadsheetId && spreadsheetId && wb.spreadsheetId !== spreadsheetId) {
+            console.warn(
+              `Apps Script bridge is bound to ${wb.spreadsheetId}, not ${spreadsheetId}. Update Code.gs in sheet ${spreadsheetId}.`
+            );
+            lastCloudHydratedAt = Date.now();
+            return;
+          }
+          const hasLegacyRows = Boolean(
+            wb && wb.tabSummaries.some((t) => t.name !== '_SystemState' && t.rowCount > 0)
+          );
+
+          if (wb && hasLegacyRows) {
+            // Keep existing non-app tabs untouched and write only _SystemState for clean start
+            const synced = await syncSystemStateOnlyViaAppsScript(bridgeUrl, local);
+            local.settings.googleSpreadsheetId =
+              spreadsheetId || synced.spreadsheetId || wb.spreadsheetId || local.settings.googleSpreadsheetId;
+            local.settings.googleSpreadsheetUrl = synced.spreadsheetUrl || wb.spreadsheetUrl || local.settings.googleSpreadsheetUrl;
+          } else {
+            const synced = await syncDatabaseViaAppsScript(bridgeUrl, local);
+            local.settings.googleSpreadsheetId =
+              spreadsheetId || synced.spreadsheetId || local.settings.googleSpreadsheetId;
+            local.settings.googleSpreadsheetUrl = synced.spreadsheetUrl || local.settings.googleSpreadsheetUrl;
+          }
+          writeDbLocalOnly(local);
+          dbDirty = false;
+        }
+        lastCloudHydratedAt = Date.now();
+        return;
+      }
+
+      if (!spreadsheetId) return;
+      const serverToken = await getServerGoogleAccessToken();
+      if (!serverToken) return;
+
+      const remoteDb = await readDatabaseFromGoogleSheet(serverToken, spreadsheetId);
+      if (remoteDb) {
+        normalizeLoadedDb(remoteDb);
+        remoteDb.settings.googleSpreadsheetId = remoteDb.settings.googleSpreadsheetId || spreadsheetId;
+        if (process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() && !remoteDb.settings.googleDriveFolderId) {
+          remoteDb.settings.googleDriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID.trim();
+        }
+        writeDbLocalOnly(remoteDb);
+        dbDirty = false;
+      } else {
+        const local = readDb();
+        local.settings.googleSpreadsheetId = spreadsheetId;
+        local.settings.lastSheetsSyncAt = new Date().toISOString();
+
+        const wb = await readWorkbookFromGoogleSheet(serverToken, spreadsheetId).catch(() => null);
+        const hasLegacyRows = Boolean(
+          wb && wb.tabSummaries.some((t) => t.name !== '_SystemState' && t.rowCount > 0)
+        );
+        if (wb && hasLegacyRows) {
+          await syncSystemStateOnlyToGoogleSheet(serverToken, spreadsheetId, local);
+        } else {
+          // Brand new empty spreadsheet — seed Google Sheets with initial salon database
+          await syncDatabaseToGoogleSheet(serverToken, spreadsheetId, local);
+        }
+        writeDbLocalOnly(local);
+        dbDirty = false;
+      }
+      lastCloudHydratedAt = Date.now();
+    } catch (err) {
+      console.warn('Cloud Google Sheets hydration warning:', err instanceof Error ? err.message : err);
+    } finally {
+      cloudHydrationPromise = null;
+    }
+  })();
+
+  return cloudHydrationPromise;
+}
+
+export async function flushCloudDbSync(
+  requestGoogleToken?: string
+): Promise<{ synced: boolean; error?: string }> {
+  if (!dbDirty) return { synced: false };
+
+  const db = readDb();
+  const bridgeUrl = getAppsScriptBridgeUrl(db.settings.googleAppsScriptUrl);
+  const spreadsheetId = db.settings.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
+  if (!bridgeUrl && !spreadsheetId) return { synced: false };
+
+  if (cloudSyncInFlight) {
+    return cloudSyncInFlight;
+  }
+
+  cloudSyncInFlight = (async () => {
+    try {
+      if (bridgeUrl) {
+        dbDirty = false;
+        db.settings.googleAppsScriptUrl = bridgeUrl;
+        db.settings.lastSheetsSyncAt = new Date().toISOString();
+        const result = await syncDatabaseViaAppsScript(bridgeUrl, db);
+        if (result.spreadsheetId && spreadsheetId && result.spreadsheetId !== spreadsheetId) {
+          throw new Error(
+            `Apps Script synced to ${result.spreadsheetId} instead of ${spreadsheetId}. Redeploy Code.gs inside Google Sheet ${spreadsheetId}.`
+          );
+        }
+        if (result.spreadsheetId && !spreadsheetId) db.settings.googleSpreadsheetId = result.spreadsheetId;
+        if (result.spreadsheetUrl && !db.settings.googleSpreadsheetUrl) {
+          db.settings.googleSpreadsheetUrl = result.spreadsheetUrl;
+        }
+        writeDbLocalOnly(db);
+        lastCloudHydratedAt = Date.now();
+        return { synced: true };
+      }
+
+      if (!spreadsheetId) return { synced: false };
+      const serverToken = await getServerGoogleAccessToken();
+      const token = serverToken || requestGoogleToken;
+      if (!token) return { synced: false };
+
+      dbDirty = false;
+      db.settings.googleSpreadsheetId = spreadsheetId;
+      db.settings.lastSheetsSyncAt = new Date().toISOString();
+      writeDbLocalOnly(db);
+      await syncDatabaseToGoogleSheet(token, spreadsheetId, db);
+      lastCloudHydratedAt = Date.now();
+      return { synced: true };
+    } catch (err) {
+      dbDirty = true;
+      const msg = err instanceof Error ? err.message : 'Google Sheets cloud sync failed.';
+      console.warn('Google Sheets auto-sync warning:', msg);
+      return { synced: false, error: msg };
+    } finally {
+      cloudSyncInFlight = null;
+    }
+  })();
+
+  return cloudSyncInFlight;
 }
 
 export function createBackupSnapshot(db: SalonDatabase, label: string, createdBy: string): string {
@@ -506,4 +792,22 @@ export function appendAuditLog(
   if (db.auditLogs.length > 2000) {
     db.auditLogs = db.auditLogs.slice(0, 2000);
   }
+}
+
+export function recordSessionEvent(
+  db: SalonDatabase,
+  event: Omit<UserSessionRecord, 'id'>
+): UserSessionRecord {
+  if (!Array.isArray(db.sessionHistory)) {
+    db.sessionHistory = [];
+  }
+  const entry: UserSessionRecord = {
+    id: `SES-LOG-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+    ...event,
+  };
+  db.sessionHistory.unshift(entry);
+  if (db.sessionHistory.length > 1000) {
+    db.sessionHistory = db.sessionHistory.slice(0, 1000);
+  }
+  return entry;
 }

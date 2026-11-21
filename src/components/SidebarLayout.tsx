@@ -81,6 +81,7 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
   children,
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [bgError, setBgError] = useState(false);
 
   const visibleNav = NAV_ITEMS.filter((item) => item.roles.includes(user.role));
   const activeTitle = visibleNav.find((i) => i.id === activeSection)?.label || 'Dashboard';
@@ -92,6 +93,9 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
 
   const salonName = branding?.businessName || 'Trendy Unisex Salon';
   const salonTagline = branding?.tagline || 'Where Beauty Meets Style';
+  const backgroundUrl =
+    branding?.backgroundImageUrl ||
+    '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg';
 
   const SidebarContent = (
     <div className="flex flex-col h-full bg-white border-r border-[#1D1717]/10">
@@ -195,7 +199,21 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
       )}
 
       {/* Main Content Shell */}
-      <div className="flex-1 min-w-0 flex flex-col">
+      <div className="relative flex-1 min-w-0 flex flex-col">
+        {!bgError && backgroundUrl && (
+          <div className="fixed inset-0 lg:left-64 pointer-events-none z-0 overflow-hidden no-print">
+            <img
+              src={backgroundUrl}
+              alt=""
+              aria-hidden="true"
+              referrerPolicy="no-referrer"
+              onError={() => setBgError(true)}
+              className="w-full h-full object-cover opacity-20"
+            />
+            <div className="absolute inset-0 bg-[#F8EEEB]/80" />
+          </div>
+        )}
+
         {/* Top Bar (3-zone contract) */}
         <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-[#1D1717]/10 px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 no-print">
           {/* Zone 1: Menu + Breadcrumb */}
@@ -256,7 +274,7 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
         </header>
 
         {/* Page Viewport */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1440px] w-full mx-auto">
+        <main className="relative z-10 flex-1 p-4 sm:p-6 lg:p-8 max-w-[1440px] w-full mx-auto">
           {children}
         </main>
       </div>

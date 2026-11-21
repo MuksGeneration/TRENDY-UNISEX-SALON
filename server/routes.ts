@@ -1,20 +1,27 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import {
   appendAuditLog,
   createBackupSnapshot,
   createInitialDatabase,
   getBackupSnapshot,
+  IS_SERVERLESS,
+  markDbCleanFromCloudSync,
   readDb,
+  recordSessionEvent,
   todayIsoDate,
   writeDb,
 } from './db.ts';
 import {
+  extractSessionToken,
+  getClientContext,
   hashPassword,
   requireAuth,
   requireRole,
   SESSION_COOKIE_NAME,
   signSessionToken,
   verifyPassword,
+  verifySessionToken,
   type AuthenticatedRequest,
 } from './auth.ts';
 import {
@@ -26,16 +33,33 @@ import {
 import { askSalonAiAssistant } from './aiService.ts';
 import {
   backupDatabaseToGoogleDrive,
+  backupDatabaseViaAppsScript,
+  createNewSheetViaAppsScript,
   createSalonGoogleSpreadsheet,
+  deleteDriveFileViaAppsScript,
   deleteGoogleDriveFile,
   ensureCategoryDriveFolder,
+  fetchDriveMediaViaAppsScript,
   fetchGoogleDriveFileMedia,
+  getAppsScriptBridgeUrl,
+  getServerGoogleAccessToken,
+  getServerGoogleCredentialsStatus,
   listAppDriveFiles,
+  listDriveFilesViaAppsScript,
   parseDataUrl,
+  readDatabaseFromGoogleSheet,
+  readDatabaseViaAppsScript,
   readGoogleSheetTab,
+  readGoogleSheetTabViaAppsScript,
+  readWorkbookFromGoogleSheet,
+  readWorkbookViaAppsScript,
   syncDatabaseToGoogleSheet,
+  syncDatabaseViaAppsScript,
+  testAppsScriptBridge,
   uploadBinaryToGoogleDrive,
+  uploadBinaryViaAppsScript,
 } from './workspaceService.ts';
+import { detectSheetEntity, importTabularSheetsIntoDb } from './migrationEngine.ts';
 import { generateAppsScriptCode } from './appsScriptTemplate.ts';
 import type {
   Appointment,
@@ -85,24 +109,100 @@ export function createApiRouter() {
     }
 
     const db = readDb();
-    const user = db.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = db.users.find((u) => u.email.toLowerCase() === normalizedEmail);
+    const { ipAddress, userAgent } = getClientContext(req);
+    const fifteenMinAgo = Date.now() - 15 * 60 * 1000;
+    const recentFailures = (db.sessionHistory || []).filter(
+      (s) =>
+        (s.status === 'failed_login' || s.status === 'suspicious') &&
+        new Date(s.loginAt).getTime() >= fifteenMinAgo &&
+        (s.email.toLowerCase() === normalizedEmail ||
+          (ipAddress !== 'unknown' && s.ipAddress === ipAddress))
+    ).length;
+
     if (!user || !user.active || !verifyPassword(password, user.passwordHash)) {
+      const now = new Date().toISOString();
+      const isDisabledAttempt = Boolean(user && !user.active);
+      const isBruteSuspect = recentFailures >= 2 || isDisabledAttempt || (!user && recentFailures >= 1);
+      const reason = isDisabledAttempt
+        ? 'Sign-in attempted on disabled staff account'
+        : !user
+          ? recentFailures >= 1
+            ? `Repeated unknown email login attempt (${recentFailures + 1} in 15m)`
+            : 'Unknown email sign-in attempt'
+          : recentFailures >= 2
+            ? `Multiple failed password attempts (${recentFailures + 1} in 15m)`
+            : 'Incorrect password entered';
+
+      recordSessionEvent(db, {
+        userId: user?.id,
+        userName: user?.name,
+        email: normalizedEmail,
+        role: user?.role,
+        authMethod: 'credentials',
+        status: isBruteSuspect ? 'suspicious' : 'failed_login',
+        loginAt: now,
+        ipAddress,
+        userAgent,
+        reason,
+        suspicious: isBruteSuspect,
+        suspiciousSeverity: isDisabledAttempt || recentFailures >= 3 ? 'high' : isBruteSuspect ? 'medium' : 'low',
+      });
+
+      if (isBruteSuspect) {
+        appendAuditLog(
+          db,
+          {
+            userId: user?.id || 'UNKNOWN',
+            userName: user?.name || normalizedEmail,
+            userRole: user?.role || 'employee',
+          },
+          'SECURITY_SUSPICIOUS_LOGIN',
+          'Security',
+          user?.id || normalizedEmail,
+          `${reason} from ${ipAddress}.`
+        );
+      }
+      writeDb(db);
       res.status(401).json({ error: 'Invalid email or password, or account is deactivated.' });
       return;
     }
 
-    user.lastLoginAt = new Date().toISOString();
+    const now = new Date().toISOString();
+    const sessionId = crypto.randomUUID();
+    user.lastLoginAt = now;
+    const hadPriorFailures = recentFailures >= 2;
+
+    recordSessionEvent(db, {
+      sessionId,
+      userId: user.id,
+      userName: user.name,
+      email: user.email,
+      role: user.role,
+      authMethod: 'credentials',
+      status: 'active',
+      loginAt: now,
+      ipAddress,
+      userAgent,
+      reason: hadPriorFailures
+        ? `Signed in after ${recentFailures} recent failed attempt(s)`
+        : 'Successful credential sign-in',
+      suspicious: hadPriorFailures,
+      suspiciousSeverity: hadPriorFailures ? 'medium' : undefined,
+    });
+
     appendAuditLog(
       db,
       { userId: user.id, userName: user.name, userRole: user.role },
       'USER_LOGIN',
       'User',
       user.id,
-      `Signed in via salon credentials (${user.role}).`
+      `Signed in via salon credentials (${user.role}) from ${ipAddress}.`
     );
     writeDb(db);
 
-    const token = signSessionToken(user);
+    const token = signSessionToken(user, sessionId);
     res.cookie(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
       sameSite: 'none',
@@ -125,6 +225,7 @@ export function createApiRouter() {
   router.post('/auth/google-session', async (req, res) => {
     const authHeader = req.headers.authorization;
     const accessToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const { ipAddress, userAgent } = getClientContext(req);
     if (!accessToken) {
       res.status(401).json({ error: 'Google OAuth access token is required.' });
       return;
@@ -135,6 +236,19 @@ export function createApiRouter() {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!infoRes.ok) {
+        const db = readDb();
+        recordSessionEvent(db, {
+          email: 'google-oauth-unknown',
+          authMethod: 'google_workspace',
+          status: 'suspicious',
+          loginAt: new Date().toISOString(),
+          ipAddress,
+          userAgent,
+          reason: 'Rejected invalid or expired Google OAuth access token.',
+          suspicious: true,
+          suspiciousSeverity: 'medium',
+        });
+        writeDb(db);
         res.status(401).json({ error: 'Invalid or expired Google OAuth access token.' });
         return;
       }
@@ -145,34 +259,84 @@ export function createApiRouter() {
       }
 
       const db = readDb();
-      let user = db.users.find(
+      const user = db.users.find(
         (u) => u.email.toLowerCase() === googleProfile.email!.toLowerCase()
       );
-      // If the Google account owner is signing in for the first time and matches primary owner setup
       if (!user) {
-        // Check if user wants to link to owner or reject unknown accounts
+        recordSessionEvent(db, {
+          userName: googleProfile.name,
+          email: googleProfile.email.toLowerCase(),
+          authMethod: 'google_workspace',
+          status: 'suspicious',
+          loginAt: new Date().toISOString(),
+          ipAddress,
+          userAgent,
+          reason: 'Unregistered Google account attempted workspace sign-in.',
+          suspicious: true,
+          suspiciousSeverity: 'high',
+        });
+        appendAuditLog(
+          db,
+          { userId: 'UNKNOWN', userName: googleProfile.email, userRole: 'employee' },
+          'SECURITY_UNREGISTERED_GOOGLE',
+          'Security',
+          googleProfile.email,
+          `Blocked unregistered Google account (${googleProfile.email}) from ${ipAddress}.`
+        );
+        writeDb(db);
         res.status(403).json({
           error: `Google account (${googleProfile.email}) is not registered as a Trendy Unisex Salon user. Please sign in with salon credentials first or ask the Owner to add ${googleProfile.email} in User Management.`,
         });
         return;
       }
       if (!user.active) {
+        recordSessionEvent(db, {
+          userId: user.id,
+          userName: user.name,
+          email: user.email,
+          role: user.role,
+          authMethod: 'google_workspace',
+          status: 'suspicious',
+          loginAt: new Date().toISOString(),
+          ipAddress,
+          userAgent,
+          reason: 'Deactivated staff account attempted Google Workspace sign-in.',
+          suspicious: true,
+          suspiciousSeverity: 'high',
+        });
+        writeDb(db);
         res.status(403).json({ error: 'This salon user account is deactivated.' });
         return;
       }
 
-      user.lastLoginAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      const sessionId = crypto.randomUUID();
+      user.lastLoginAt = now;
+      recordSessionEvent(db, {
+        sessionId,
+        userId: user.id,
+        userName: user.name,
+        email: user.email,
+        role: user.role,
+        authMethod: 'google_workspace',
+        status: 'active',
+        loginAt: now,
+        ipAddress,
+        userAgent,
+        reason: 'Successful Google Workspace sign-in',
+        suspicious: false,
+      });
       appendAuditLog(
         db,
         { userId: user.id, userName: user.name, userRole: user.role },
         'GOOGLE_LOGIN',
         'User',
         user.id,
-        `Authenticated via Google Workspace (${googleProfile.email}).`
+        `Authenticated via Google Workspace (${googleProfile.email}) from ${ipAddress}.`
       );
       writeDb(db);
 
-      const token = signSessionToken(user);
+      const token = signSessionToken(user, sessionId);
       res.cookie(SESSION_COOKIE_NAME, token, {
         httpOnly: true,
         sameSite: 'none',
@@ -196,6 +360,54 @@ export function createApiRouter() {
   });
 
   router.post('/auth/logout', (req, res) => {
+    const { token } = extractSessionToken(req);
+    if (token) {
+      const payload = verifySessionToken(token);
+      if (payload) {
+        const db = readDb();
+        const now = new Date().toISOString();
+        const sess =
+          (payload.sessionId &&
+            db.sessionHistory.find(
+              (s) => s.sessionId === payload.sessionId && s.status === 'active'
+            )) ||
+          db.sessionHistory.find(
+            (s) => s.userId === payload.userId && s.status === 'active'
+          );
+
+        if (sess) {
+          sess.status = 'signed_out';
+          sess.logoutAt = now;
+        } else {
+          const { ipAddress, userAgent } = getClientContext(req);
+          recordSessionEvent(db, {
+            sessionId: payload.sessionId,
+            userId: payload.userId,
+            userName: payload.name,
+            email: payload.email,
+            role: payload.role,
+            authMethod: 'token',
+            status: 'signed_out',
+            loginAt: now,
+            logoutAt: now,
+            ipAddress,
+            userAgent,
+            reason: 'Signed out',
+            suspicious: false,
+          });
+        }
+
+        appendAuditLog(
+          db,
+          { userId: payload.userId, userName: payload.name, userRole: payload.role },
+          'USER_LOGOUT',
+          'User',
+          payload.userId,
+          `Signed out of Trendy Unisex Salon session.`
+        );
+        writeDb(db);
+      }
+    }
     res.clearCookie(SESSION_COOKIE_NAME, { sameSite: 'none', secure: true });
     res.json({ ok: true });
   });
@@ -946,7 +1158,7 @@ export function createApiRouter() {
   }
 
   async function uploadEmployeeDataUrlToDrive(
-    token: string,
+    token: string | undefined,
     db: SalonDatabase,
     emp: Employee,
     kind: 'avatar' | 'id_front' | 'id_back',
@@ -955,26 +1167,46 @@ export function createApiRouter() {
   ): Promise<{ fileId: string; webViewLink?: string }> {
     const { mimeType, buffer } = parseDataUrl(dataUrl);
     const category: DriveDocumentCategory = kind === 'avatar' ? 'Employee Photo' : 'National ID';
-    const { rootFolderId, folderId, folderName } = await ensureCategoryDriveFolder(
-      token,
-      category,
-      db.settings.googleDriveFolderId
-    );
-    db.settings.googleDriveFolderId = rootFolderId;
-
     const safeEmpName = emp.fullName.trim().replace(/[^a-zA-Z0-9_-]+/g, '_');
     const ext = fileExtensionFromMime(mimeType);
     const suffix =
       kind === 'avatar' ? 'Profile_Photo' : kind === 'id_front' ? 'National_ID_Front' : 'National_ID_Back';
     const fileName = `${emp.id}_${safeEmpName}_${suffix}.${ext}`;
+    const description = `${category} for ${emp.fullName} (${emp.id}) — Trendy Unisex Salon`;
 
-    const uploaded = await uploadBinaryToGoogleDrive(token, {
-      fileName,
-      mimeType,
-      buffer,
-      folderId,
-      description: `${category} for ${emp.fullName} (${emp.id}) — Trendy Unisex Salon`,
-    });
+    let uploaded: { id: string; name: string; mimeType: string; sizeBytes: number; webViewLink?: string };
+    let folderName: string;
+
+    const bridgeUrl = getAppsScriptBridgeUrl(db.settings.googleAppsScriptUrl);
+    if (!token && bridgeUrl) {
+      const up = await uploadBinaryViaAppsScript(bridgeUrl, {
+        fileName,
+        mimeType,
+        buffer,
+        category,
+        description,
+      });
+      db.settings.googleDriveFolderId = up.rootFolderId;
+      folderName = up.folderName;
+      uploaded = up.file;
+    } else if (token) {
+      const folderRes = await ensureCategoryDriveFolder(
+        token,
+        category,
+        db.settings.googleDriveFolderId
+      );
+      db.settings.googleDriveFolderId = folderRes.rootFolderId;
+      folderName = folderRes.folderName;
+      uploaded = await uploadBinaryToGoogleDrive(token, {
+        fileName,
+        mimeType,
+        buffer,
+        folderId: folderRes.folderId,
+        description,
+      });
+    } else {
+      throw new Error('No Google Workspace token or Apps Script bridge URL configured.');
+    }
 
     const docRecord: DriveDocumentRecord = {
       id: makeId('DRV'),
@@ -1982,12 +2214,23 @@ export function createApiRouter() {
           recordedBy: req.sessionUser!.name,
           createdAt: now,
         });
-        if (item.currentQuantity <= item.minStockLevel) {
+        if (item.minStockLevel > 0 && item.currentQuantity < item.minStockLevel * 0.1) {
+          db.notifications.unshift({
+            id: makeId('NTF'),
+            type: 'low_stock',
+            title: 'Stock Low (<10% Reorder Level)',
+            message: `CRITICAL: ${item.name} (${item.sku}) dropped to ${item.currentQuantity} ${item.unit}, below 10% of reorder level (${item.minStockLevel} ${item.unit}). Create a restock report.`,
+            severity: 'alert',
+            read: false,
+            targetRoles: ['owner', 'manager'],
+            createdAt: now,
+          });
+        } else if (item.currentQuantity <= item.minStockLevel) {
           db.notifications.unshift({
             id: makeId('NTF'),
             type: 'low_stock',
             title: 'Low Stock Alert',
-            message: `${item.name} (${item.sku}) is at ${item.currentQuantity} ${item.unit} (min: ${item.minStockLevel}).`,
+            message: `${item.name} (${item.sku}) is at ${item.currentQuantity} ${item.unit} (reorder level: ${item.minStockLevel}).`,
             severity: 'warning',
             read: false,
             targetRoles: ['owner', 'manager'],
@@ -2537,7 +2780,8 @@ export function createApiRouter() {
         sellingPrice: Math.max(0, Number(b.sellingPrice) || 0),
         supplierId: b.supplierId,
         supplierName: db.suppliers.find((s) => s.id === b.supplierId)?.name || b.supplierName,
-        minStockLevel: Math.max(0, Number(b.minStockLevel) || 3),
+        minStockLevel:
+          b.minStockLevel !== undefined ? Math.max(0, Number(b.minStockLevel) || 0) : 3,
         expirationDate: b.expirationDate,
         isRetail: Boolean(b.isRetail),
         active: true,
@@ -2555,6 +2799,18 @@ export function createApiRouter() {
           unitCost: item.purchasePrice,
           notes: 'Initial stock registration',
           recordedBy: req.sessionUser!.name,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      if (item.minStockLevel > 0 && item.currentQuantity < item.minStockLevel * 0.1) {
+        db.notifications.unshift({
+          id: makeId('NTF'),
+          type: 'low_stock',
+          title: 'Stock Low (<10% Reorder Level)',
+          message: `CRITICAL: ${item.name} (${item.sku}) was registered at ${item.currentQuantity} ${item.unit}, below 10% of reorder level (${item.minStockLevel} ${item.unit}). Create a restock report.`,
+          severity: 'alert',
+          read: false,
+          targetRoles: ['owner', 'manager'],
           createdAt: new Date().toISOString(),
         });
       }
@@ -2626,6 +2882,31 @@ export function createApiRouter() {
         createdAt: new Date().toISOString(),
       };
       db.stockMovements.unshift(movement);
+      if (delta < 0) {
+        if (item.minStockLevel > 0 && item.currentQuantity < item.minStockLevel * 0.1) {
+          db.notifications.unshift({
+            id: makeId('NTF'),
+            type: 'low_stock',
+            title: 'Stock Low (<10% Reorder Level)',
+            message: `CRITICAL: ${item.name} (${item.sku}) dropped to ${item.currentQuantity} ${item.unit}, below 10% of reorder level (${item.minStockLevel} ${item.unit}). Create a restock report.`,
+            severity: 'alert',
+            read: false,
+            targetRoles: ['owner', 'manager'],
+            createdAt: movement.createdAt,
+          });
+        } else if (item.currentQuantity <= item.minStockLevel) {
+          db.notifications.unshift({
+            id: makeId('NTF'),
+            type: 'low_stock',
+            title: 'Low Stock Alert',
+            message: `${item.name} (${item.sku}) is at ${item.currentQuantity} ${item.unit} (reorder level: ${item.minStockLevel}).`,
+            severity: 'warning',
+            read: false,
+            targetRoles: ['owner', 'manager'],
+            createdAt: movement.createdAt,
+          });
+        }
+      }
       appendAuditLog(
         db,
         req.sessionUser!,
@@ -2636,6 +2917,87 @@ export function createApiRouter() {
       );
       writeDb(db);
       res.status(201).json({ movement, item });
+    }
+  );
+
+  router.post(
+    '/inventory/restock-report',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const { scope } = (req.body || {}) as { scope?: 'critical' | 'all_low' };
+      const activeItems = db.stockItems.filter((s) => s.active !== false);
+
+      const flagged = activeItems
+        .filter((item) => {
+          const isCritical = item.minStockLevel > 0 && item.currentQuantity < item.minStockLevel * 0.1;
+          if (scope === 'critical') return isCritical;
+          return isCritical || item.currentQuantity <= item.minStockLevel;
+        })
+        .map((item) => {
+          const isCriticalStockLow =
+            item.minStockLevel > 0 && item.currentQuantity < item.minStockLevel * 0.1;
+          const reorderPercent =
+            item.minStockLevel > 0
+              ? Math.round((item.currentQuantity / item.minStockLevel) * 100)
+              : 100;
+          const targetQuantity = Math.max(
+            item.openingQuantity || 0,
+            item.minStockLevel * 2,
+            item.minStockLevel + 5
+          );
+          const suggestedOrderQty = Math.max(1, targetQuantity - item.currentQuantity);
+          const estimatedCost = suggestedOrderQty * item.purchasePrice;
+          const supplier = db.suppliers.find((s) => s.id === item.supplierId);
+          return {
+            stockItemId: item.id,
+            sku: item.sku,
+            name: item.name,
+            category: item.category,
+            brand: item.brand,
+            unit: item.unit,
+            currentQuantity: item.currentQuantity,
+            reorderLevel: item.minStockLevel,
+            reorderPercent,
+            priority: isCriticalStockLow ? ('Stock Low (<10%)' as const) : ('Below Reorder' as const),
+            suggestedOrderQty,
+            unitPurchasePrice: item.purchasePrice,
+            estimatedCost,
+            supplierName: supplier?.name || item.supplierName || 'General Supplier',
+            supplierPhone: supplier?.phone || '—',
+          };
+        })
+        .sort((a, b) => a.reorderPercent - b.reorderPercent);
+
+      if (flagged.length === 0) {
+        res.status(400).json({ error: 'No inventory items currently fall below restock thresholds.' });
+        return;
+      }
+
+      const criticalCount = flagged.filter((i) => i.priority === 'Stock Low (<10%)').length;
+      const totalEstimatedCost = flagged.reduce((sum, i) => sum + i.estimatedCost, 0);
+      const report = {
+        id: makeId('RST'),
+        generatedAt: new Date().toISOString(),
+        generatedBy: req.sessionUser!.name,
+        scope: scope || 'all_low',
+        criticalCount,
+        totalItems: flagged.length,
+        totalEstimatedCost,
+        items: flagged,
+      };
+
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'RESTOCK_REPORT_CREATED',
+        'Inventory',
+        report.id,
+        `Generated restock report ${report.id} covering ${flagged.length} item(s) (${criticalCount} Stock Low <10% of reorder level), est. cost UGX ${totalEstimatedCost.toLocaleString('en-US')}.`
+      );
+      writeDb(db);
+      res.status(201).json({ report });
     }
   );
 
@@ -2869,8 +3231,66 @@ export function createApiRouter() {
         0
       );
 
+      // Past 6 months revenue vs operational expenses ending at endDate's month
+      const anchorYm = /^\d{4}-\d{2}/.test(endDate)
+        ? endDate.slice(0, 7)
+        : todayIsoDate().slice(0, 7);
+      const [anchorYear, anchorMonth] = anchorYm.split('-').map(Number);
+      const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthlyTrend: Array<{
+        month: string;
+        label: string;
+        revenue: number;
+        expenses: number;
+        serviceRevenue: number;
+        retailRevenue: number;
+      }> = [];
+
+      for (let offset = 5; offset >= 0; offset -= 1) {
+        const dt = new Date(Date.UTC(anchorYear, anchorMonth - 1 - offset, 1));
+        const y = dt.getUTCFullYear();
+        const m = dt.getUTCMonth() + 1;
+        const monthKey = `${y}-${String(m).padStart(2, '0')}`;
+        const label = `${MONTH_NAMES[m - 1]} ${y}`;
+
+        const monthTxs = db.posTransactions.filter(
+          (t) =>
+            t.date.slice(0, 7) === monthKey &&
+            t.status !== 'Reversed' &&
+            t.status !== 'Refunded' &&
+            (!employeeFilter || t.items.some((i) => i.employeeId === employeeFilter))
+        );
+
+        let mServiceRev = 0;
+        let mRetailRev = 0;
+        for (const tx of monthTxs) {
+          for (const item of tx.items) {
+            if (employeeFilter && item.employeeId !== employeeFilter) continue;
+            if (item.itemType === 'service') mServiceRev += item.lineTotal;
+            else mRetailRev += item.lineTotal;
+          }
+        }
+        const mRevenue = employeeFilter
+          ? mServiceRev + mRetailRev
+          : monthTxs.reduce((s, t) => s + t.totalAmount, 0);
+
+        const mExpenses = db.expenses
+          .filter((e) => e.date.slice(0, 7) === monthKey && e.status !== 'Rejected')
+          .reduce((s, e) => s + e.amount, 0);
+
+        monthlyTrend.push({
+          month: monthKey,
+          label,
+          revenue: mRevenue,
+          expenses: mExpenses,
+          serviceRevenue: mServiceRev,
+          retailRevenue: mRetailRev,
+        });
+      }
+
       res.json({
         period: { startDate, endDate },
+        monthlyTrend,
         salesSummary: {
           transactionCount: txs.length,
           totalBilledSales,
@@ -2959,196 +3379,24 @@ export function createApiRouter() {
         return;
       }
 
-      // Preserve an automatic pre-migration backup snapshot
-      const backupId = createBackupSnapshot(
-        db,
-        `Pre-Migration Backup before ${fileName}`,
-        req.sessionUser!.name
-      );
-
-      let importedCount = 0;
-      const importedSheetNames: string[] = [];
-
-      for (const [sheetName, rows] of Object.entries(sheets)) {
-        if (!Array.isArray(rows) || rows.length === 0) continue;
-        importedSheetNames.push(sheetName);
-        const lower = sheetName.toLowerCase();
-
-        if (lower.includes('customer')) {
-          for (const r of rows) {
-            const name = String(r['Full Name'] || r['Customer'] || r['Name'] || '').trim();
-            const phone = String(r['Phone'] || r['Phone Number'] || '').trim();
-            if (!name) continue;
-            if (!db.customers.some((c) => c.fullName.toLowerCase() === name.toLowerCase() && c.phone === phone)) {
-              db.customers.push({
-                id: makeId('CUST-HIST'),
-                fullName: name,
-                phone: phone || 'N/A',
-                email: String(r['Email'] || ''),
-                registrationDate: String(r['Date'] || todayIsoDate()).slice(0, 10),
-                loyaltyPoints: Number(r['Points'] || 0),
-                loyaltyTier: 'Bronze',
-                totalVisits: Number(r['Visits'] || 1),
-                totalSpent: Number(r['Total Spent'] || 0),
-                notes: 'Imported from historical Excel workbook',
-              });
-              importedCount++;
-            }
-          }
-        } else if (lower.includes('expense')) {
-          for (const r of rows) {
-            const amount = Number(r['Amount'] || r['Amount (UGX)'] || r['Total'] || 0);
-            const desc = String(r['Description'] || r['Item'] || r['Expense'] || '').trim();
-            if (amount <= 0 || !desc) continue;
-            db.expenses.push({
-              id: makeId('EXP-HIST'),
-              date: String(r['Date'] || todayIsoDate()).slice(0, 10),
-              category: String(r['Category'] || 'Other expenses'),
-              description: desc,
-              amount,
-              paymentMethod: (String(r['Payment Method'] || 'Cash') as PaymentMethod),
-              responsiblePerson: String(r['Responsible'] || r['Recorded By'] || 'Historical Import'),
-              status: 'Approved',
-              approvedBy: 'Historical Record',
-              isHistorical: true,
-              createdBy: req.sessionUser!.name,
-              createdAt: new Date().toISOString(),
-            });
-            importedCount++;
-          }
-        } else if (lower.includes('commission')) {
-          for (const r of rows) {
-            const empName = String(r['Employee'] || r['Stylist'] || '').trim();
-            const gross = Number(r['Gross'] || r['Gross Earnings'] || r['Amount'] || 0);
-            const comm = Number(r['Commission'] || r['Employee Commission'] || 0);
-            if (!empName || gross <= 0) continue;
-            const emp = db.employees.find((e) => e.fullName.toLowerCase() === empName.toLowerCase());
-            const lunch = Number(r['Lunch'] || r['Lunch Deduction'] || 0);
-            const net = Number(r['Net'] || Math.max(0, gross - lunch));
-            const salonShare = Number(r['Salon Share'] || Math.max(0, net - comm));
-            db.commissionLedger.push({
-              id: makeId('COM-HIST'),
-              transactionId: makeId('TX-HIST'),
-              transactionReference: String(r['Reference'] || `HIST-${importedCount + 1}`),
-              date: String(r['Date'] || todayIsoDate()).slice(0, 10),
-              employeeId: emp?.id || 'HISTORICAL',
-              employeeName: empName,
-              serviceName: String(r['Service'] || 'Historical Service'),
-              serviceCategory: String(r['Category'] || 'Historical'),
-              grossEarnings: gross,
-              lunchAllocation: lunch,
-              netCommissionableEarnings: net,
-              commissionRate: Number(r['Rate'] || (net > 0 ? comm / net : 0)),
-              employeeCommission: comm,
-              salonShare,
-              paymentStatus: (String(r['Status'] || 'Paid') as 'Paid' | 'Unpaid'),
-              isHistorical: true,
-              createdAt: new Date().toISOString(),
-            });
-            importedCount++;
-          }
-        } else if (lower.includes('stock') || lower.includes('inventory')) {
-          for (const r of rows) {
-            const name = String(r['Product Name'] || r['Item'] || r['Name'] || '').trim();
-            if (!name) continue;
-            const qty = Number(r['Quantity'] || r['Current Quantity'] || 0);
-            db.stockItems.push({
-              id: makeId('STK-HIST'),
-              sku: String(r['SKU'] || r['Stock ID'] || makeId('SKU')),
-              name,
-              category: String(r['Category'] || 'Hair products'),
-              brand: String(r['Brand'] || 'Salon Stock'),
-              unit: String(r['Unit'] || 'Unit'),
-              openingQuantity: qty,
-              currentQuantity: qty,
-              purchasePrice: Number(r['Purchase Price'] || r['Cost'] || 0),
-              sellingPrice: Number(r['Selling Price'] || r['Price'] || 0),
-              minStockLevel: Number(r['Min Stock'] || 3),
-              isRetail: Boolean(Number(r['Selling Price'] || 0) > 0),
-              active: true,
-            });
-            importedCount++;
-          }
-        } else if (lower.includes('sale') || lower.includes('transaction') || lower.includes('income')) {
-          for (const r of rows) {
-            const total = Number(r['Total'] || r['Amount'] || r['Sales'] || 0);
-            if (total <= 0) continue;
-            const txDate = String(r['Date'] || todayIsoDate()).slice(0, 10);
-            const ref = String(r['Reference'] || `HIST-SALE-${Date.now()}-${importedCount}`);
-            if (db.posTransactions.some((t) => t.reference === ref)) continue;
-            const srvName = String(r['Service'] || r['Description'] || 'Historical Service');
-            const empName = String(r['Employee'] || r['Stylist'] || '');
-            const emp = db.employees.find((e) => e.fullName.toLowerCase() === empName.toLowerCase());
-            db.posTransactions.push({
-              id: makeId('TX-HIST'),
-              reference: ref,
-              date: txDate,
-              createdAt: new Date().toISOString(),
-              customerName: String(r['Customer'] || 'Historical Customer'),
-              cashierId: req.sessionUser!.userId,
-              cashierName: String(r['Cashier'] || 'Historical Import'),
-              items: [
-                {
-                  id: makeId('ITEM'),
-                  itemType: 'service',
-                  refId: 'HIST',
-                  name: srvName,
-                  categoryName: String(r['Category'] || 'Hair Styling'),
-                  employeeId: emp?.id,
-                  employeeName: empName || undefined,
-                  quantity: 1,
-                  unitPrice: total,
-                  discount: 0,
-                  lineTotal: total,
-                },
-              ],
-              subtotal: total,
-              discountTotal: 0,
-              taxAmount: 0,
-              tipAmount: 0,
-              totalAmount: total,
-              amountPaid: total,
-              balanceDue: 0,
-              payments: [
-                {
-                  id: makeId('PAY-HIST'),
-                  transactionId: ref,
-                  method: (String(r['Payment Method'] || 'Cash') as PaymentMethod),
-                  amount: total,
-                  paidAt: new Date().toISOString(),
-                  recordedBy: 'Historical Import',
-                },
-              ],
-              status: 'Completed',
-              isHistorical: true,
-              notes: `Imported intact from ${fileName} (${sheetName})`,
-            });
-            importedCount++;
-          }
-        }
-      }
-
-      db.migrationLogs.unshift({
-        id: makeId('MIG'),
+      const result = importTabularSheetsIntoDb(db, sheets, {
         fileName,
-        migratedAt: new Date().toISOString(),
-        migratedBy: req.sessionUser!.name,
-        backupId,
-        sheetsImported: importedSheetNames,
-        recordsImported: importedCount,
-        notes: 'Historical records preserved with isHistorical=true; new commission & lunch policy untouched for past dates.',
+        actorName: req.sessionUser!.name,
+        actorUserId: req.sessionUser!.userId,
+        actorRole: req.sessionUser!.role,
+        sourceKind: 'excel',
+        createBackupFn: createBackupSnapshot,
       });
 
-      appendAuditLog(
-        db,
-        req.sessionUser!,
-        'HISTORICAL_DATA_MIGRATED',
-        'DataMigrationLog',
-        backupId,
-        `Imported ${importedCount} historical records from ${fileName} (${importedSheetNames.join(', ')}). Pre-migration backup: ${backupId}.`
-      );
       writeDb(db);
-      res.json({ ok: true, backupId, importedCount, sheetsImported: importedSheetNames });
+      res.json({
+        ok: true,
+        backupId: result.backupId,
+        importedCount: result.importedCount,
+        skippedDuplicates: result.skippedDuplicates,
+        sheetsImported: result.sheetsImported,
+        tabSummaries: result.tabSummaries,
+      });
     }
   );
 
@@ -3448,34 +3696,265 @@ export function createApiRouter() {
   );
 
   // ==================== GOOGLE WORKSPACE (SHEETS & DRIVE) ====================
+  async function resolveGoogleToken(req: express.Request): Promise<string | undefined> {
+    const headerToken = req.headers['x-google-token']?.toString()?.trim();
+    if (headerToken) return headerToken;
+    const serverToken = await getServerGoogleAccessToken();
+    return serverToken || undefined;
+  }
+
+  function resolveBridge(db: SalonDatabase): string | undefined {
+    return getAppsScriptBridgeUrl(db.settings.googleAppsScriptUrl);
+  }
+
+  router.get(
+    '/workspace/status',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (_req, res) => {
+      const db = readDb();
+      const serverCreds = getServerGoogleCredentialsStatus(db.settings.googleAppsScriptUrl);
+      res.json({
+        platform: process.env.VERCEL ? 'vercel' : IS_SERVERLESS ? 'serverless' : 'node',
+        serverCredentialsConfigured: serverCreds.configured,
+        serverCredentialMode: serverCreds.mode,
+        appsScriptConfigured: Boolean(resolveBridge(db)),
+        appsScriptUrl: db.settings.googleAppsScriptUrl || '',
+        envSpreadsheetConfigured: Boolean(process.env.GOOGLE_SPREADSHEET_ID?.trim()),
+        envDriveFolderConfigured: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID?.trim()),
+        linkedSpreadsheetId: db.settings.googleSpreadsheetId || '',
+        linkedSpreadsheetUrl: db.settings.googleSpreadsheetUrl || '',
+        linkedDriveFolderId: db.settings.googleDriveFolderId || '',
+        lastSheetsSyncAt: db.settings.lastSheetsSyncAt || '',
+      });
+    }
+  );
+
+  function extractGoogleSheetId(raw: string): string {
+    const trimmed = raw.trim();
+    const match = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/.exec(trimmed);
+    return match ? match[1] : trimmed;
+  }
+
+  function extractGoogleDriveFolderId(raw: string): string {
+    const trimmed = raw.trim();
+    const match = /\/folders\/([a-zA-Z0-9_-]+)/.exec(trimmed);
+    return match ? match[1] : trimmed;
+  }
+
+  router.post(
+    '/workspace/sheets/link',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    async (req: AuthenticatedRequest, res) => {
+      const { spreadsheetId, driveFolderId, googleAppsScriptUrl } = req.body as {
+        spreadsheetId?: string;
+        driveFolderId?: string;
+        googleAppsScriptUrl?: string;
+      };
+      const db = readDb();
+      if (spreadsheetId !== undefined) {
+        const cleanId = extractGoogleSheetId(spreadsheetId);
+        db.settings.googleSpreadsheetId = cleanId || undefined;
+        db.settings.googleSpreadsheetUrl = cleanId
+          ? `https://docs.google.com/spreadsheets/d/${cleanId}/edit`
+          : undefined;
+      }
+      if (driveFolderId !== undefined) {
+        const cleanFolder = extractGoogleDriveFolderId(driveFolderId);
+        db.settings.googleDriveFolderId = cleanFolder || undefined;
+      }
+      if (googleAppsScriptUrl !== undefined) {
+        const cleanScriptUrl = googleAppsScriptUrl.trim();
+        db.settings.googleAppsScriptUrl = cleanScriptUrl || undefined;
+      }
+
+      let testInfo: { spreadsheetId: string; spreadsheetUrl: string; rootFolderId: string } | undefined;
+      const bridgeUrl = resolveBridge(db);
+      if (googleAppsScriptUrl && bridgeUrl) {
+        try {
+          testInfo = await testAppsScriptBridge(bridgeUrl, db.settings.googleSpreadsheetId);
+          if (
+            db.settings.googleSpreadsheetId &&
+            testInfo.spreadsheetId &&
+            testInfo.spreadsheetId !== db.settings.googleSpreadsheetId
+          ) {
+            res.status(400).json({
+              error: `That Apps Script URL is bound to another Google Sheet (${testInfo.spreadsheetId}) instead of your linked sheet (${db.settings.googleSpreadsheetId}). Open sheet ${db.settings.googleSpreadsheetId} → Extensions → Apps Script, paste the updated Code.gs below, deploy as Web app (Who has access: Anyone), and paste the new /exec URL.`,
+            });
+            return;
+          }
+          if (!db.settings.googleSpreadsheetId && testInfo.spreadsheetId) {
+            db.settings.googleSpreadsheetId = testInfo.spreadsheetId;
+          }
+          if (!db.settings.googleSpreadsheetUrl && testInfo.spreadsheetUrl) {
+            db.settings.googleSpreadsheetUrl = testInfo.spreadsheetUrl;
+          }
+          if (testInfo.rootFolderId && !db.settings.googleDriveFolderId) {
+            db.settings.googleDriveFolderId = testInfo.rootFolderId;
+          }
+        } catch (err) {
+          res.status(400).json({
+            error:
+              err instanceof Error
+                ? `Apps Script URL check failed: ${err.message}`
+                : 'Apps Script Web App check failed.',
+          });
+          return;
+        }
+      }
+
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'GOOGLE_WORKSPACE_LINKED',
+        'Settings',
+        db.settings.googleSpreadsheetId || db.settings.googleDriveFolderId || 'WORKSPACE',
+        `Updated Google Workspace links (Sheet: ${db.settings.googleSpreadsheetId || 'none'}, Drive: ${db.settings.googleDriveFolderId || 'none'}, Apps Script: ${db.settings.googleAppsScriptUrl ? 'configured' : 'none'}).`
+      );
+      writeDb(db);
+      res.json({
+        spreadsheetId: db.settings.googleSpreadsheetId || '',
+        spreadsheetUrl: db.settings.googleSpreadsheetUrl || '',
+        driveFolderId: db.settings.googleDriveFolderId || '',
+        googleAppsScriptUrl: db.settings.googleAppsScriptUrl || '',
+        verified: Boolean(testInfo),
+      });
+    }
+  );
+
+  router.post(
+    '/workspace/apps-script/test',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    async (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const candidateUrl = (req.body.url as string | undefined)?.trim() || resolveBridge(db);
+      if (!candidateUrl) {
+        res.status(400).json({ error: 'Provide your deployed Apps Script Web App URL first.' });
+        return;
+      }
+      try {
+        const info = await testAppsScriptBridge(candidateUrl, db.settings.googleSpreadsheetId);
+        if (
+          db.settings.googleSpreadsheetId &&
+          info.spreadsheetId &&
+          info.spreadsheetId !== db.settings.googleSpreadsheetId
+        ) {
+          res.status(400).json({
+            error: `That Apps Script URL is still bound to sheet ${info.spreadsheetId} instead of your linked sheet (${db.settings.googleSpreadsheetId}). Open sheet ${db.settings.googleSpreadsheetId} → Extensions → Apps Script, paste Code.gs below, deploy a new Web app (Who has access: Anyone), and paste the new /exec URL here.`,
+          });
+          return;
+        }
+        db.settings.googleAppsScriptUrl = candidateUrl;
+        if (!db.settings.googleSpreadsheetId && info.spreadsheetId) {
+          db.settings.googleSpreadsheetId = info.spreadsheetId;
+        }
+        if (!db.settings.googleSpreadsheetUrl && info.spreadsheetUrl) {
+          db.settings.googleSpreadsheetUrl = info.spreadsheetUrl;
+        }
+        if (info.rootFolderId && !db.settings.googleDriveFolderId) {
+          db.settings.googleDriveFolderId = info.rootFolderId;
+        }
+        writeDb(db);
+        res.json({ ...info, ok: true, googleAppsScriptUrl: candidateUrl });
+      } catch (err) {
+        res.status(400).json({
+          error: err instanceof Error ? err.message : 'Apps Script connection failed.',
+        });
+      }
+    }
+  );
+
+  router.post(
+    '/workspace/sheets/unlink',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      db.settings.googleSpreadsheetId = undefined;
+      db.settings.googleSpreadsheetUrl = undefined;
+      db.settings.lastSheetsSyncAt = undefined;
+      if (req.body?.clearAppsScript) {
+        db.settings.googleAppsScriptUrl = undefined;
+      }
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'GOOGLE_SHEET_UNLINKED',
+        'Settings',
+        'UNLINK',
+        'Unlinked previous Google Spreadsheet so the salon can connect a fresh sheet.'
+      );
+      writeDb(db);
+      res.json({ ok: true });
+    }
+  );
+
   router.post(
     '/workspace/sheets/create',
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
-        res.status(401).json({ error: 'Please click "Connect Google Workspace" first to authorize Google Sheets.' });
+      const token = await resolveGoogleToken(req);
+      let db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      const useAppsScript = Boolean(bridgeUrl && !req.headers['x-google-token']);
+
+      if (!token && !useAppsScript) {
+        res.status(401).json({
+          error: 'Connect Google Workspace or link an Apps Script Web App URL first.',
+        });
         return;
       }
+
       try {
-        const db = readDb();
-        const result = await createSalonGoogleSpreadsheet(token, db);
+        if (req.body?.resetClean) {
+          createBackupSnapshot(db, 'Backup Before Starting Fresh Google Sheet', req.sessionUser!.name);
+          const fresh = createInitialDatabase();
+          fresh.users = db.users;
+          fresh.settings = { ...db.settings };
+          fresh.backups = db.backups;
+          db = fresh;
+        }
+
+        const result =
+          useAppsScript && bridgeUrl
+            ? await createNewSheetViaAppsScript(bridgeUrl, db, req.body?.title)
+            : await createSalonGoogleSpreadsheet(token!, db);
+
         db.settings.googleSpreadsheetId = result.spreadsheetId;
         db.settings.googleSpreadsheetUrl = result.spreadsheetUrl;
         db.settings.lastSheetsSyncAt = new Date().toISOString();
+        if (
+          'rootFolderId' in result &&
+          typeof result.rootFolderId === 'string' &&
+          result.rootFolderId &&
+          !db.settings.googleDriveFolderId
+        ) {
+          db.settings.googleDriveFolderId = result.rootFolderId;
+        }
         appendAuditLog(
           db,
           req.sessionUser!,
           'GOOGLE_SHEET_CREATED',
           'Settings',
           result.spreadsheetId,
-          `Created & populated Google Sheet database (${result.sheetCount} tabs).`
+          `Created & populated new Google Sheet database (${result.sheetCount} tabs).`
         );
         writeDb(db);
+        markDbCleanFromCloudSync();
         res.json(result);
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : 'Google Sheets creation failed.' });
+        const msg = err instanceof Error ? err.message : 'Google Sheets creation failed.';
+        if (msg.includes('Unknown action: createNewSheet')) {
+          res.status(400).json({
+            error:
+              'Your currently deployed Code.gs is an older version bound to the old sheet. To start with a brand-new sheet: open sheets.new, paste the updated Code.gs below into Extensions → Apps Script, click Deploy → New deployment → Web app ("Who has access: Anyone"), and paste the new /exec URL here.',
+          });
+          return;
+        }
+        res.status(500).json({ error: msg });
       }
     }
   );
@@ -3485,11 +3964,56 @@ export function createApiRouter() {
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
+      const token = await resolveGoogleToken(req);
       const db = readDb();
+      const bridgeUrl = resolveBridge(db);
       const spreadsheetId = (req.body.spreadsheetId as string) || db.settings.googleSpreadsheetId;
+
+      if (bridgeUrl && !req.headers['x-google-token']) {
+        try {
+          const syncTargetDb = spreadsheetId && spreadsheetId !== db.settings.googleSpreadsheetId
+            ? { ...db, settings: { ...db.settings, googleSpreadsheetId: spreadsheetId } }
+            : db;
+          const result = await syncDatabaseViaAppsScript(bridgeUrl, syncTargetDb);
+          if (
+            spreadsheetId &&
+            result.spreadsheetId &&
+            result.spreadsheetId !== spreadsheetId
+          ) {
+            res.status(400).json({
+              error: `Your deployed Apps Script URL wrote to ${result.spreadsheetId} instead of your linked sheet (${spreadsheetId}). Open sheet ${spreadsheetId} → Extensions → Apps Script, deploy the updated Code.gs, and link that /exec URL.`,
+            });
+            return;
+          }
+          if (!db.settings.googleSpreadsheetId && result.spreadsheetId) {
+            db.settings.googleSpreadsheetId = result.spreadsheetId;
+          }
+          if (!db.settings.googleSpreadsheetUrl && result.spreadsheetUrl) {
+            db.settings.googleSpreadsheetUrl = result.spreadsheetUrl;
+          }
+          db.settings.lastSheetsSyncAt = new Date().toISOString();
+          appendAuditLog(
+            db,
+            req.sessionUser!,
+            'GOOGLE_SHEETS_SYNCED',
+            'Settings',
+            db.settings.googleSpreadsheetId || 'APPS_SCRIPT',
+            `Synced ${result.updatedCells} cells across ${result.sheetTabs.length} tabs via Apps Script bridge.`
+          );
+          writeDb(db);
+          markDbCleanFromCloudSync();
+          res.json({ ...result, lastSheetsSyncAt: db.settings.lastSheetsSyncAt });
+          return;
+        } catch (err) {
+          res.status(500).json({ error: err instanceof Error ? err.message : 'Apps Script sync failed.' });
+          return;
+        }
+      }
+
       if (!token) {
-        res.status(401).json({ error: 'Google Workspace token missing. Sign in with Google first.' });
+        res.status(401).json({
+          error: 'Connect Google Workspace or save an Apps Script Web App URL in Settings first.',
+        });
         return;
       }
       if (!spreadsheetId) {
@@ -3509,6 +4033,7 @@ export function createApiRouter() {
           `Synced ${result.updatedCells} cells across ${result.sheetTabs.length} tabs.`
         );
         writeDb(db);
+        markDbCleanFromCloudSync();
         res.json({ ...result, lastSheetsSyncAt: db.settings.lastSheetsSyncAt });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : 'Google Sheets sync failed.' });
@@ -3516,13 +4041,122 @@ export function createApiRouter() {
     }
   );
 
+  router.post(
+    '/workspace/sheets/restore',
+    requireAuth,
+    requireRole(['owner']),
+    async (req: AuthenticatedRequest, res) => {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      const spreadsheetId = (req.body.spreadsheetId as string)?.trim() || db.settings.googleSpreadsheetId;
+
+      if (bridgeUrl && !req.headers['x-google-token']) {
+        try {
+          const remote = await readDatabaseViaAppsScript(bridgeUrl, spreadsheetId);
+          if (
+            spreadsheetId &&
+            remote.spreadsheetId &&
+            remote.spreadsheetId !== spreadsheetId
+          ) {
+            res.status(400).json({
+              error: `Apps Script URL points to ${remote.spreadsheetId} instead of your linked sheet (${spreadsheetId}).`,
+            });
+            return;
+          }
+          if (!remote.db) {
+            res.status(404).json({
+              error: 'No _SystemState database snapshot was found in the Google Sheet yet. Sync to Google Sheets first.',
+            });
+            return;
+          }
+          createBackupSnapshot(db, 'Pre-Sheets-Restore Snapshot', req.sessionUser!.name);
+          remote.db.settings.googleAppsScriptUrl = bridgeUrl;
+          if (!remote.db.settings.googleSpreadsheetId && (spreadsheetId || remote.spreadsheetId)) {
+            remote.db.settings.googleSpreadsheetId = spreadsheetId || remote.spreadsheetId;
+          }
+          if (remote.spreadsheetUrl) remote.db.settings.googleSpreadsheetUrl = remote.spreadsheetUrl;
+          remote.db.settings.lastSheetsSyncAt = new Date().toISOString();
+          appendAuditLog(
+            remote.db,
+            req.sessionUser!,
+            'GOOGLE_SHEETS_RESTORED',
+            'SalonDatabase',
+            remote.spreadsheetId || 'APPS_SCRIPT',
+            'Restored full salon database from Google Sheets via Apps Script bridge.'
+          );
+          writeDb(remote.db);
+          markDbCleanFromCloudSync();
+          res.json({
+            ok: true,
+            spreadsheetId: remote.db.settings.googleSpreadsheetId || '',
+            restoredAt: remote.db.settings.lastSheetsSyncAt,
+          });
+          return;
+        } catch (err) {
+          res.status(500).json({ error: err instanceof Error ? err.message : 'Apps Script restore failed.' });
+          return;
+        }
+      }
+
+      if (!token) {
+        res.status(401).json({
+          error: 'Connect Google Workspace or configure your Apps Script Web App URL first.',
+        });
+        return;
+      }
+      if (!spreadsheetId) {
+        res.status(400).json({ error: 'No Google Spreadsheet ID linked to restore from.' });
+        return;
+      }
+      try {
+        const restored = await readDatabaseFromGoogleSheet(token, spreadsheetId);
+        if (!restored) {
+          res.status(404).json({
+            error: 'No _SystemState database snapshot was found in that Google Sheet. Sync to Google Sheets at least once first.',
+          });
+          return;
+        }
+        createBackupSnapshot(db, 'Pre-Sheets-Restore Snapshot', req.sessionUser!.name);
+        restored.settings.googleSpreadsheetId = spreadsheetId;
+        restored.settings.lastSheetsSyncAt = new Date().toISOString();
+        appendAuditLog(
+          restored,
+          req.sessionUser!,
+          'GOOGLE_SHEETS_RESTORED',
+          'SalonDatabase',
+          spreadsheetId,
+          `Restored full salon database from Google Sheets (${spreadsheetId}).`
+        );
+        writeDb(restored);
+        markDbCleanFromCloudSync();
+        res.json({ ok: true, spreadsheetId, restoredAt: restored.settings.lastSheetsSyncAt });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to restore from Google Sheets.' });
+      }
+    }
+  );
+
   router.get('/workspace/sheets/read', requireAuth, async (req: AuthenticatedRequest, res) => {
-    const token = req.headers['x-google-token']?.toString();
+    const token = await resolveGoogleToken(req);
     const db = readDb();
+    const bridgeUrl = resolveBridge(db);
     const spreadsheetId = (req.query.spreadsheetId as string) || db.settings.googleSpreadsheetId;
     const tab = req.query.tab as string | undefined;
+
+    if (bridgeUrl && !req.headers['x-google-token']) {
+      try {
+        const data = await readGoogleSheetTabViaAppsScript(bridgeUrl, tab, spreadsheetId);
+        res.json(data);
+        return;
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read Sheet via Apps Script.' });
+        return;
+      }
+    }
+
     if (!token || !spreadsheetId) {
-      res.status(400).json({ error: 'Google token and linked Spreadsheet ID are required.' });
+      res.status(400).json({ error: 'Google connection (or Apps Script URL) and Spreadsheet ID are required.' });
       return;
     }
     try {
@@ -3534,19 +4168,136 @@ export function createApiRouter() {
   });
 
   router.post(
+    '/workspace/sheets/inspect-workbook',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    async (req: AuthenticatedRequest, res) => {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      const spreadsheetId = (req.body.spreadsheetId as string)?.trim() || db.settings.googleSpreadsheetId;
+
+      if (!token && !(bridgeUrl && !req.headers['x-google-token'])) {
+        res.status(401).json({
+          error: 'Connect Google Workspace or link an Apps Script Web App URL first.',
+        });
+        return;
+      }
+
+      try {
+        const wb =
+          bridgeUrl && !req.headers['x-google-token']
+            ? await readWorkbookViaAppsScript(bridgeUrl, spreadsheetId)
+            : await readWorkbookFromGoogleSheet(token!, spreadsheetId!);
+
+        if (wb.spreadsheetId && !db.settings.googleSpreadsheetId) {
+          db.settings.googleSpreadsheetId = wb.spreadsheetId;
+          if (wb.spreadsheetUrl) db.settings.googleSpreadsheetUrl = wb.spreadsheetUrl;
+          writeDb(db);
+        }
+
+        const tabs = wb.tabSummaries
+          .filter((t) => t.name !== '_SystemState')
+          .map((t) => {
+            const rows = wb.sheets[t.name] || [];
+            const detectedType = detectSheetEntity(t.name, rows);
+            return {
+              name: t.name,
+              rowCount: t.rowCount,
+              headers: t.headers,
+              detectedType,
+            };
+          });
+
+        res.json({
+          ok: true,
+          spreadsheetId: wb.spreadsheetId || spreadsheetId || '',
+          spreadsheetUrl: wb.spreadsheetUrl || db.settings.googleSpreadsheetUrl || '',
+          hasSystemState: wb.hasSystemState,
+          tabs,
+        });
+      } catch (err) {
+        res.status(500).json({
+          error: err instanceof Error ? err.message : 'Failed to scan Google Sheet tabs.',
+        });
+      }
+    }
+  );
+
+  router.post(
+    '/workspace/sheets/import-legacy',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    async (req: AuthenticatedRequest, res) => {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      const spreadsheetId = (req.body.spreadsheetId as string)?.trim() || db.settings.googleSpreadsheetId;
+      const targetTabs = Array.isArray(req.body.tabs) ? (req.body.tabs as string[]) : undefined;
+
+      if (!token && !(bridgeUrl && !req.headers['x-google-token'])) {
+        res.status(401).json({
+          error: 'Connect Google Workspace or link an Apps Script Web App URL first.',
+        });
+        return;
+      }
+
+      try {
+        const wb =
+          bridgeUrl && !req.headers['x-google-token']
+            ? await readWorkbookViaAppsScript(bridgeUrl, spreadsheetId)
+            : await readWorkbookFromGoogleSheet(token!, spreadsheetId!);
+
+        if (!db.settings.googleSpreadsheetId && wb.spreadsheetId) db.settings.googleSpreadsheetId = wb.spreadsheetId;
+        if (!db.settings.googleSpreadsheetUrl && wb.spreadsheetUrl) db.settings.googleSpreadsheetUrl = wb.spreadsheetUrl;
+
+        const result = importTabularSheetsIntoDb(db, wb.sheets, {
+          fileName: `Google Sheet (${wb.spreadsheetId || spreadsheetId || 'Linked'})`,
+          actorName: req.sessionUser!.name,
+          actorUserId: req.sessionUser!.userId,
+          actorRole: req.sessionUser!.role,
+          sourceKind: 'google_sheet',
+          createBackupFn: createBackupSnapshot,
+          targetTabs,
+        });
+
+        writeDb(db);
+        res.json({
+          ok: true,
+          backupId: result.backupId,
+          importedCount: result.importedCount,
+          skippedDuplicates: result.skippedDuplicates,
+          sheetsImported: result.sheetsImported,
+          tabSummaries: result.tabSummaries,
+        });
+      } catch (err) {
+        res.status(500).json({
+          error: err instanceof Error ? err.message : 'Failed to import records from old Google Sheet.',
+        });
+      }
+    }
+  );
+
+  router.post(
     '/workspace/drive/backup',
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
-        res.status(401).json({ error: 'Google Workspace token missing. Sign in with Google first.' });
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      if (!token && !bridgeUrl) {
+        res.status(401).json({
+          error: 'Connect Google Workspace or configure an Apps Script Web App URL first.',
+        });
         return;
       }
       try {
-        const db = readDb();
         const label = (req.body.label as string) || 'Manual Cloud Backup';
-        const file = await backupDatabaseToGoogleDrive(token, db, label);
+        const file =
+          bridgeUrl && !req.headers['x-google-token']
+            ? await backupDatabaseViaAppsScript(bridgeUrl, db, label)
+            : await backupDatabaseToGoogleDrive(token!, db, label);
         db.settings.googleDriveFolderId = file.rootFolderId;
         const backupId = createBackupSnapshot(db, `${label} (Drive: ${file.name})`, req.sessionUser!.name);
         const bkp = db.backups.find((b) => b.id === backupId);
@@ -3580,13 +4331,18 @@ export function createApiRouter() {
   );
 
   router.get('/workspace/drive/files', requireAuth, async (req, res) => {
-    const token = req.headers['x-google-token']?.toString();
-    if (!token) {
-      res.status(401).json({ error: 'Google Workspace token missing.' });
+    const token = await resolveGoogleToken(req);
+    const db = readDb();
+    const bridgeUrl = resolveBridge(db);
+    if (!token && !bridgeUrl) {
+      res.status(401).json({ error: 'Google Workspace token or Apps Script URL missing.' });
       return;
     }
     try {
-      const list = await listAppDriveFiles(token);
+      const list =
+        bridgeUrl && !req.headers['x-google-token']
+          ? await listDriveFilesViaAppsScript(bridgeUrl)
+          : await listAppDriveFiles(token!);
       res.json(list);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list Drive files.' });
@@ -3639,11 +4395,17 @@ export function createApiRouter() {
       size?: string;
       webViewLink?: string;
     }> = [];
-    const token = req.headers['x-google-token']?.toString();
-    if (token && ['owner', 'manager'].includes(user.role)) {
+    const token = await resolveGoogleToken(req);
+    const bridgeUrl = resolveBridge(db);
+    if (['owner', 'manager'].includes(user.role)) {
       try {
-        const listed = await listAppDriveFiles(token);
-        driveFiles = listed.files;
+        if (bridgeUrl && !req.headers['x-google-token']) {
+          const listed = await listDriveFilesViaAppsScript(bridgeUrl);
+          driveFiles = listed.files;
+        } else if (token) {
+          const listed = await listAppDriveFiles(token);
+          driveFiles = listed.files;
+        }
       } catch {
         // Return stored vault catalog even if Drive listing fails temporarily
       }
@@ -3661,10 +4423,13 @@ export function createApiRouter() {
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
+      const token = await resolveGoogleToken(req);
+      const preDb = readDb();
+      const bridgeUrl = resolveBridge(preDb);
+      const useAppsScript = Boolean(bridgeUrl && !req.headers['x-google-token']);
+      if (!token && !useAppsScript) {
         res.status(401).json({
-          error: 'Google Workspace is not connected. Please click "Connect Google Workspace" first.',
+          error: 'Connect Google Workspace or configure your Apps Script Web App URL first.',
         });
         return;
       }
@@ -3718,21 +4483,40 @@ export function createApiRouter() {
 
       try {
         const db = readDb();
-        const { rootFolderId, folderId, folderName } = await ensureCategoryDriveFolder(
-          token,
-          safeCategory,
-          db.settings.googleDriveFolderId
-        );
-        db.settings.googleDriveFolderId = rootFolderId;
-
         const cleanName = fileName.trim().replace(/[\\/]/g, '_');
-        const uploaded = await uploadBinaryToGoogleDrive(token, {
-          fileName: cleanName,
-          mimeType: parsed.mimeType,
-          buffer: parsed.buffer,
-          folderId,
-          description: `${safeCategory}${notes ? ` — ${notes.trim()}` : ''} (Trendy Unisex Salon)`,
-        });
+        const desc = `${safeCategory}${notes ? ` — ${notes.trim()}` : ''} (Trendy Unisex Salon)`;
+        let rootFolderId: string;
+        let folderName: string;
+        let uploaded: { id: string; name: string; mimeType: string; sizeBytes: number; webViewLink?: string };
+
+        if (useAppsScript && bridgeUrl) {
+          const up = await uploadBinaryViaAppsScript(bridgeUrl, {
+            fileName: cleanName,
+            mimeType: parsed.mimeType,
+            buffer: parsed.buffer,
+            category: safeCategory,
+            description: desc,
+          });
+          rootFolderId = up.rootFolderId;
+          folderName = up.folderName;
+          uploaded = up.file;
+        } else {
+          const folderRes = await ensureCategoryDriveFolder(
+            token!,
+            safeCategory,
+            db.settings.googleDriveFolderId
+          );
+          rootFolderId = folderRes.rootFolderId;
+          folderName = folderRes.folderName;
+          uploaded = await uploadBinaryToGoogleDrive(token!, {
+            fileName: cleanName,
+            mimeType: parsed.mimeType,
+            buffer: parsed.buffer,
+            folderId: folderRes.folderId,
+            description: desc,
+          });
+        }
+        db.settings.googleDriveFolderId = rootFolderId;
 
         const relatedEmp = relatedEmployeeId
           ? db.employees.find((e) => e.id === relatedEmployeeId)
@@ -3782,15 +4566,17 @@ export function createApiRouter() {
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      if (!token && !bridgeUrl) {
         res.status(401).json({
-          error: 'Google Workspace is not connected. Please click "Connect Google Workspace" first.',
+          error: 'Connect Google Workspace or configure an Apps Script Web App URL first.',
         });
         return;
       }
 
-      const db = readDb();
+      const effectiveToken = bridgeUrl && !req.headers['x-google-token'] ? undefined : token;
       let syncedCount = 0;
       let skippedCount = 0;
       const errors: string[] = [];
@@ -3799,7 +4585,7 @@ export function createApiRouter() {
         if (emp.avatarUrl?.startsWith('data:') && !emp.avatarDriveFileId) {
           try {
             const up = await uploadEmployeeDataUrlToDrive(
-              token,
+              effectiveToken,
               db,
               emp,
               'avatar',
@@ -3819,7 +4605,7 @@ export function createApiRouter() {
         if (emp.nationalIdDocumentUrl?.startsWith('data:') && !emp.nationalIdFrontDriveFileId) {
           try {
             const up = await uploadEmployeeDataUrlToDrive(
-              token,
+              effectiveToken,
               db,
               emp,
               'id_front',
@@ -3839,7 +4625,7 @@ export function createApiRouter() {
         if (emp.nationalIdBackUrl?.startsWith('data:') && !emp.nationalIdBackDriveFileId) {
           try {
             const up = await uploadEmployeeDataUrlToDrive(
-              token,
+              effectiveToken,
               db,
               emp,
               'id_back',
@@ -3879,7 +4665,7 @@ export function createApiRouter() {
   );
 
   async function uploadSalonAssetToDrive(
-    token: string,
+    token: string | undefined,
     db: SalonDatabase,
     kind: 'logo' | 'trading_licence',
     dataUrl: string,
@@ -3887,29 +4673,49 @@ export function createApiRouter() {
   ): Promise<{ fileId: string; webViewLink?: string }> {
     const { mimeType, buffer } = parseDataUrl(dataUrl);
     const category: DriveDocumentCategory = kind === 'logo' ? 'Salon Media' : 'Trading Licence';
-    const { rootFolderId, folderId, folderName } = await ensureCategoryDriveFolder(
-      token,
-      category,
-      db.settings.googleDriveFolderId
-    );
-    db.settings.googleDriveFolderId = rootFolderId;
-
     const ext = fileExtensionFromMime(mimeType);
     const fileName =
       kind === 'logo'
         ? `Trendy_Unisex_Salon_Logo.${ext}`
         : `Trendy_Unisex_Salon_Trading_Licence${db.settings.tradingLicenceNumber ? `_${db.settings.tradingLicenceNumber.replace(/[^a-zA-Z0-9_-]+/g, '_')}` : ''}.${ext}`;
+    const description =
+      kind === 'logo'
+        ? 'Official Trendy Unisex Salon Logo'
+        : `Official Salon Trading Licence${db.settings.tradingLicenceNumber ? ` (${db.settings.tradingLicenceNumber})` : ''}`;
 
-    const uploaded = await uploadBinaryToGoogleDrive(token, {
-      fileName,
-      mimeType,
-      buffer,
-      folderId,
-      description:
-        kind === 'logo'
-          ? 'Official Trendy Unisex Salon Logo'
-          : `Official Salon Trading Licence${db.settings.tradingLicenceNumber ? ` (${db.settings.tradingLicenceNumber})` : ''}`,
-    });
+    const bridgeUrl = resolveBridge(db);
+    let folderName: string;
+    let uploaded: { id: string; name: string; mimeType: string; sizeBytes: number; webViewLink?: string };
+
+    if (!token && bridgeUrl) {
+      const up = await uploadBinaryViaAppsScript(bridgeUrl, {
+        fileName,
+        mimeType,
+        buffer,
+        category,
+        description,
+      });
+      db.settings.googleDriveFolderId = up.rootFolderId;
+      folderName = up.folderName;
+      uploaded = up.file;
+    } else if (token) {
+      const folderRes = await ensureCategoryDriveFolder(
+        token,
+        category,
+        db.settings.googleDriveFolderId
+      );
+      db.settings.googleDriveFolderId = folderRes.rootFolderId;
+      folderName = folderRes.folderName;
+      uploaded = await uploadBinaryToGoogleDrive(token, {
+        fileName,
+        mimeType,
+        buffer,
+        folderId: folderRes.folderId,
+        description,
+      });
+    } else {
+      throw new Error('No Google Workspace token or Apps Script bridge URL configured.');
+    }
 
     db.driveDocuments.unshift({
       id: makeId('DRV'),
@@ -3936,22 +4742,24 @@ export function createApiRouter() {
     requireAuth,
     requireRole(['owner']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      if (!token && !bridgeUrl) {
         res.status(401).json({
-          error: 'Google Workspace is not connected. Please click "Connect Google Workspace" first.',
+          error: 'Connect Google Workspace or configure an Apps Script Web App URL first.',
         });
         return;
       }
 
-      const db = readDb();
+      const effectiveToken = bridgeUrl && !req.headers['x-google-token'] ? undefined : token;
       let syncedCount = 0;
       const errors: string[] = [];
 
       if (db.settings.salonLogoUrl?.startsWith('data:') && !db.settings.salonLogoDriveFileId) {
         try {
           const up = await uploadSalonAssetToDrive(
-            token,
+            effectiveToken,
             db,
             'logo',
             db.settings.salonLogoUrl,
@@ -3968,7 +4776,7 @@ export function createApiRouter() {
       if (db.settings.tradingLicenceUrl?.startsWith('data:') && !db.settings.tradingLicenceDriveFileId) {
         try {
           const up = await uploadSalonAssetToDrive(
-            token,
+            effectiveToken,
             db,
             'trading_licence',
             db.settings.tradingLicenceUrl,
@@ -4027,16 +4835,21 @@ export function createApiRouter() {
       }
     }
 
-    const token = req.headers['x-google-token']?.toString();
-    if (!token) {
+    const token = await resolveGoogleToken(req);
+    const bridgeUrl = resolveBridge(db);
+    const useAppsScript = Boolean(bridgeUrl && !req.headers['x-google-token']);
+    if (!token && !useAppsScript) {
       res.status(401).json({
-        error: 'Google Workspace token missing. Connect Google Workspace to preview Drive-hosted files.',
+        error: 'Google Workspace connection or Apps Script Web App URL required to preview Drive files.',
       });
       return;
     }
 
     try {
-      const media = await fetchGoogleDriveFileMedia(token, fileId);
+      const media =
+        useAppsScript && bridgeUrl
+          ? await fetchDriveMediaViaAppsScript(bridgeUrl, fileId)
+          : await fetchGoogleDriveFileMedia(token!, fileId);
       const safeName = media.name.replace(/["\r\n]/g, '_');
       res.setHeader('Content-Type', media.mimeType);
       res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
@@ -4051,18 +4864,24 @@ export function createApiRouter() {
     requireAuth,
     requireRole(['owner', 'manager']),
     async (req: AuthenticatedRequest, res) => {
-      const token = req.headers['x-google-token']?.toString();
-      if (!token) {
+      const token = await resolveGoogleToken(req);
+      const db = readDb();
+      const bridgeUrl = resolveBridge(db);
+      const useAppsScript = Boolean(bridgeUrl && !req.headers['x-google-token']);
+      if (!token && !useAppsScript) {
         res.status(401).json({
-          error: 'Google Workspace token missing. Connect Google Workspace to delete files from Drive.',
+          error: 'Google Workspace connection or Apps Script Web App URL required to delete files from Drive.',
         });
         return;
       }
 
       const fileId = req.params.fileId;
       try {
-        await deleteGoogleDriveFile(token, fileId);
-        const db = readDb();
+        if (useAppsScript && bridgeUrl) {
+          await deleteDriveFileViaAppsScript(bridgeUrl, fileId);
+        } else {
+          await deleteGoogleDriveFile(token!, fileId);
+        }
         const removed = db.driveDocuments.filter((d) => d.driveFileId === fileId);
         db.driveDocuments = db.driveDocuments.filter((d) => d.driveFileId !== fileId);
 
@@ -4126,7 +4945,8 @@ export function createApiRouter() {
     const db = readDb();
     res.json({
       spreadsheetId: db.settings.googleSpreadsheetId || '',
-      code: generateAppsScriptCode(db.settings.googleSpreadsheetId),
+      driveFolderId: db.settings.googleDriveFolderId || '',
+      code: generateAppsScriptCode(db.settings.googleSpreadsheetId, db.settings.googleDriveFolderId),
     });
   });
 
@@ -4361,8 +5181,396 @@ export function createApiRouter() {
     res.json({
       businessName: db.settings.businessName,
       tagline: db.settings.tagline,
+      audienceTagline: db.settings.audienceTagline || 'For Him · For Her · For Everyone',
       location: db.settings.location,
+      phone: db.settings.phone || '0740301726',
+      socialHandle: db.settings.socialHandle || '@Trendyunisex.salon',
+      socialPlatforms: db.settings.socialPlatforms || ['TikTok', 'Instagram', 'Facebook'],
+      walkInsWelcome: db.settings.walkInsWelcome ?? true,
+      promotionalBannerUrl:
+        db.settings.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
+      backgroundImageUrl:
+        db.settings.backgroundImageUrl ||
+        '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
       salonLogoUrl: db.settings.salonLogoUrl || '',
+    });
+  });
+
+  // ==================== PUBLIC CLIENT BOOKING PORTAL ====================
+  const STANDARD_BOOKING_SLOTS = [
+    '08:00',
+    '08:30',
+    '09:00',
+    '09:30',
+    '10:00',
+    '10:30',
+    '11:00',
+    '11:30',
+    '12:00',
+    '12:30',
+    '13:00',
+    '13:30',
+    '14:00',
+    '14:30',
+    '15:00',
+    '15:30',
+    '16:00',
+    '16:30',
+    '17:00',
+    '17:30',
+    '18:00',
+    '18:30',
+    '19:00',
+    '19:30',
+    '20:00',
+  ];
+
+  function isStylistFreeAtSlot(
+    db: SalonDatabase,
+    employeeId: string,
+    date: string,
+    startTime: string,
+    durationMinutes: number
+  ): { free: boolean; reason?: string } {
+    const emp = db.employees.find(
+      (e) => e.id === employeeId && e.active && resolveEmployeeStatus(e) === 'Active'
+    );
+    if (!emp) {
+      return { free: false, reason: 'Stylist unavailable' };
+    }
+    const dayOff = db.schedules.find(
+      (s) => s.employeeId === employeeId && s.date === date && s.isDayOff
+    );
+    if (dayOff) {
+      return { free: false, reason: 'Day Off' };
+    }
+    const newStart = timeToMinutes(startTime);
+    const newEnd = newStart + Math.max(15, durationMinutes);
+    const conflict = db.appointments.find((a) => {
+      if (a.employeeId !== employeeId || a.date !== date) return false;
+      if (['Cancelled', 'No Show', 'Completed'].includes(a.status)) return false;
+      const existStart = timeToMinutes(a.startTime);
+      const existEnd = existStart + a.durationMinutes;
+      return newStart < existEnd && newEnd > existStart;
+    });
+    if (conflict) {
+      return { free: false, reason: 'Booked' };
+    }
+    return { free: true };
+  }
+
+  router.get('/public/booking-catalog', (_req, res) => {
+    const db = readDb();
+    const activeStylists = db.employees
+      .filter((e) => e.active && resolveEmployeeStatus(e) === 'Active')
+      .map((e) => ({
+        id: e.id,
+        fullName: e.fullName,
+        roleTitle: e.roleTitle,
+        specialties: e.specialties,
+        avatarUrl: e.avatarUrl || '',
+        workingDays: e.workingDays,
+        defaultShiftStart: e.defaultShiftStart,
+        defaultShiftEnd: e.defaultShiftEnd,
+      }));
+
+    res.json({
+      branding: {
+        businessName: db.settings.businessName,
+        tagline: db.settings.tagline,
+        audienceTagline: db.settings.audienceTagline || 'For Him · For Her · For Everyone',
+        location: db.settings.location,
+        phone: db.settings.phone || '0740301726',
+        socialHandle: db.settings.socialHandle || '@Trendyunisex.salon',
+        socialPlatforms: db.settings.socialPlatforms || ['TikTok', 'Instagram', 'Facebook'],
+        walkInsWelcome: db.settings.walkInsWelcome ?? true,
+        promotionalBannerUrl:
+          db.settings.promotionalBannerUrl || '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
+        backgroundImageUrl:
+          db.settings.backgroundImageUrl ||
+          '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
+        salonLogoUrl: db.settings.salonLogoUrl || '',
+        operatingHours: db.settings.operatingHours,
+      },
+      categories: db.serviceCategories.map((c) => ({
+        id: c.id,
+        name: c.name,
+        description: c.description || '',
+      })),
+      services: db.services
+        .filter((s) => s.active)
+        .map((s) => ({
+          id: s.id,
+          name: s.name,
+          categoryId: s.categoryId,
+          categoryName: s.categoryName,
+          price: s.price,
+          durationMinutes: s.durationMinutes,
+          qualifiedEmployeeIds: s.qualifiedEmployeeIds,
+        })),
+      stylists: activeStylists,
+    });
+  });
+
+  router.get('/public/availability', (req, res) => {
+    const db = readDb();
+    const date = String(req.query.date || todayIsoDate()).slice(0, 10);
+    const employeeId = req.query.employeeId ? String(req.query.employeeId) : 'any';
+    const duration = Math.max(15, Number(req.query.duration) || 60);
+    const today = todayIsoDate();
+
+    if (date < today) {
+      res.json({
+        date,
+        slots: STANDARD_BOOKING_SLOTS.map((time) => ({
+          time,
+          available: false,
+          availableStylistCount: 0,
+          reason: 'Past date',
+        })),
+      });
+      return;
+    }
+
+    const activeStylists = db.employees.filter(
+      (e) => e.active && resolveEmployeeStatus(e) === 'Active'
+    );
+
+    const slots = STANDARD_BOOKING_SLOTS.map((time) => {
+      if (employeeId && employeeId !== 'any') {
+        const check = isStylistFreeAtSlot(db, employeeId, date, time, duration);
+        return {
+          time,
+          available: check.free,
+          availableStylistCount: check.free ? 1 : 0,
+          reason: check.reason,
+        };
+      }
+      const freeCount = activeStylists.filter(
+        (emp) => isStylistFreeAtSlot(db, emp.id, date, time, duration).free
+      ).length;
+      return {
+        time,
+        available: freeCount > 0,
+        availableStylistCount: freeCount,
+        reason: freeCount > 0 ? undefined : 'Fully booked',
+      };
+    });
+
+    res.json({ date, slots });
+  });
+
+  router.post('/public/bookings', (req, res) => {
+    const db = readDb();
+    const { fullName, phone, email, gender, serviceIds, employeeId, date, startTime, notes } =
+      req.body as {
+        fullName?: string;
+        phone?: string;
+        email?: string;
+        gender?: Customer['gender'];
+        serviceIds?: string[];
+        employeeId?: string;
+        date?: string;
+        startTime?: string;
+        notes?: string;
+      };
+
+    if (!fullName?.trim() || !phone?.trim()) {
+      res.status(400).json({ error: 'Please enter your full name and phone number.' });
+      return;
+    }
+    if (!Array.isArray(serviceIds) || serviceIds.length === 0) {
+      res.status(400).json({ error: 'Please select at least one salon service.' });
+      return;
+    }
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !startTime || !/^\d{2}:\d{2}$/.test(startTime)) {
+      res.status(400).json({ error: 'Valid booking date and start time are required.' });
+      return;
+    }
+    if (date < todayIsoDate()) {
+      res.status(400).json({ error: 'Booking date cannot be in the past.' });
+      return;
+    }
+
+    const selectedServices = db.services.filter((s) => s.active && serviceIds.includes(s.id));
+    if (selectedServices.length === 0) {
+      res.status(400).json({ error: 'Selected services are no longer available.' });
+      return;
+    }
+
+    const calcDuration =
+      selectedServices.reduce((sum, s) => sum + s.durationMinutes, 0) ||
+      db.settings.defaultAppointmentDuration ||
+      60;
+    const estimatedTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
+
+    let chosenStylist: Employee | undefined;
+    if (employeeId && employeeId !== 'any') {
+      const check = isStylistFreeAtSlot(db, employeeId, date, startTime, calcDuration);
+      if (!check.free) {
+        res.status(409).json({
+          error: `Selected time (${startTime}) is not available (${check.reason || 'conflict'}). Please choose another time slot or stylist.`,
+        });
+        return;
+      }
+      chosenStylist = db.employees.find((e) => e.id === employeeId);
+    } else {
+      const activeStylists = db.employees.filter(
+        (e) => e.active && resolveEmployeeStatus(e) === 'Active'
+      );
+      const qualifiedFirst = [
+        ...activeStylists.filter((e) =>
+          selectedServices.some((s) => s.qualifiedEmployeeIds.includes(e.id))
+        ),
+        ...activeStylists.filter(
+          (e) => !selectedServices.some((s) => s.qualifiedEmployeeIds.includes(e.id))
+        ),
+      ];
+      chosenStylist = qualifiedFirst.find(
+        (e) => isStylistFreeAtSlot(db, e.id, date, startTime, calcDuration).free
+      );
+      if (!chosenStylist) {
+        res.status(409).json({
+          error: `All stylists are booked at ${startTime} on ${date}. Please select another time slot.`,
+        });
+        return;
+      }
+    }
+
+    if (!chosenStylist) {
+      res.status(404).json({ error: 'No active stylist available for booking.' });
+      return;
+    }
+
+    const cleanPhone = phone.trim();
+    const digitsOnly = cleanPhone.replace(/\D/g, '');
+    let customer = db.customers.find((c) => {
+      const cDigits = c.phone.replace(/\D/g, '');
+      return c.phone.trim() === cleanPhone || (digitsOnly.length >= 7 && cDigits.endsWith(digitsOnly.slice(-9)));
+    });
+
+    if (!customer) {
+      customer = {
+        id: makeId('CUST'),
+        fullName: fullName.trim(),
+        phone: cleanPhone,
+        email: email?.trim() || '',
+        gender: gender || '',
+        registrationDate: todayIsoDate(),
+        preferredStylistId: chosenStylist.id,
+        loyaltyPoints: 0,
+        loyaltyTier: 'Bronze',
+        totalVisits: 0,
+        totalSpent: 0,
+      };
+      db.customers.push(customer);
+    }
+
+    const now = new Date().toISOString();
+    const appt: Appointment = {
+      id: makeId('APT'),
+      customerId: customer.id,
+      customerName: customer.fullName,
+      customerPhone: customer.phone,
+      employeeId: chosenStylist.id,
+      employeeName: chosenStylist.fullName,
+      serviceIds: selectedServices.map((s) => s.id),
+      serviceNames: selectedServices.map((s) => s.name),
+      date,
+      startTime,
+      durationMinutes: calcDuration,
+      status: 'Confirmed',
+      source: 'Online',
+      notes: notes?.trim() || undefined,
+      reminderSent: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    db.appointments.push(appt);
+    db.notifications.unshift({
+      id: makeId('NTF'),
+      type: 'appointment',
+      title: 'Online Client Booking',
+      message: `${customer.fullName} (${customer.phone}) booked ${appt.serviceNames.join(', ')} with ${chosenStylist.fullName} on ${date} at ${startTime}.`,
+      severity: 'info',
+      read: false,
+      targetRoles: ['owner', 'manager', 'employee'],
+      createdAt: now,
+    });
+    appendAuditLog(
+      db,
+      {
+        userId: 'CLIENT-PORTAL',
+        userName: `${customer.fullName} (Online Client)`,
+        userRole: 'employee',
+      },
+      'ONLINE_BOOKING_CREATED',
+      'Appointment',
+      appt.id,
+      `Self-service client booking ${appt.id} for ${customer.fullName} with ${chosenStylist.fullName} on ${date} ${startTime} (${calcDuration} min).`
+    );
+    writeDb(db);
+
+    res.status(201).json({
+      booking: {
+        reference: appt.id,
+        customerName: appt.customerName,
+        customerPhone: appt.customerPhone,
+        employeeId: appt.employeeId,
+        employeeName: appt.employeeName,
+        serviceNames: appt.serviceNames,
+        date: appt.date,
+        startTime: appt.startTime,
+        durationMinutes: appt.durationMinutes,
+        estimatedTotal,
+        status: appt.status,
+        source: appt.source,
+        notes: appt.notes || '',
+      },
+    });
+  });
+
+  router.get('/public/bookings/lookup', (req, res) => {
+    const db = readDb();
+    const reference = String(req.query.reference || '').trim().toUpperCase();
+    const phone = String(req.query.phone || '').trim();
+    const phoneDigits = phone.replace(/\D/g, '');
+
+    if (!reference || phoneDigits.length < 6) {
+      res.status(400).json({ error: 'Enter both your booking reference (e.g. APT-...) and phone number.' });
+      return;
+    }
+
+    const appt = db.appointments.find((a) => {
+      if (a.id.toUpperCase() !== reference) return false;
+      const aDigits = a.customerPhone.replace(/\D/g, '');
+      return a.customerPhone.trim() === phone || aDigits.endsWith(phoneDigits.slice(-9));
+    });
+
+    if (!appt) {
+      res.status(404).json({ error: 'No booking found matching that reference and phone number.' });
+      return;
+    }
+
+    const estimatedTotal = db.services
+      .filter((s) => appt.serviceIds.includes(s.id))
+      .reduce((sum, s) => sum + s.price, 0);
+
+    res.json({
+      booking: {
+        reference: appt.id,
+        customerName: appt.customerName,
+        employeeName: appt.employeeName,
+        serviceNames: appt.serviceNames,
+        date: appt.date,
+        startTime: appt.startTime,
+        durationMinutes: appt.durationMinutes,
+        estimatedTotal,
+        status: appt.status,
+        source: appt.source,
+        notes: appt.notes || '',
+      },
     });
   });
 
@@ -4401,6 +5609,22 @@ export function createApiRouter() {
       Object.assign(db.settings, body, {
         salonLogoUrl: nextLogo,
         tradingLicenceUrl: nextLicence,
+        socialHandle:
+          body.socialHandle !== undefined
+            ? String(body.socialHandle).trim()
+            : db.settings.socialHandle,
+        audienceTagline:
+          body.audienceTagline !== undefined
+            ? String(body.audienceTagline).trim()
+            : db.settings.audienceTagline,
+        promotionalBannerUrl:
+          body.promotionalBannerUrl !== undefined
+            ? String(body.promotionalBannerUrl).trim()
+            : db.settings.promotionalBannerUrl,
+        backgroundImageUrl:
+          body.backgroundImageUrl !== undefined
+            ? String(body.backgroundImageUrl).trim()
+            : db.settings.backgroundImageUrl,
         tradingLicenceNumber:
           body.tradingLicenceNumber !== undefined
             ? String(body.tradingLicenceNumber).trim()
@@ -4479,6 +5703,84 @@ export function createApiRouter() {
     const db = readDb();
     res.json({ logs: db.auditLogs, migrations: db.migrationLogs });
   });
+
+  router.get(
+    '/session-history',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const all = db.sessionHistory || [];
+      const statusFilter = (req.query.status as string) || 'all';
+      const userIdFilter = (req.query.userId as string) || '';
+      const search = ((req.query.search as string) || '').trim().toLowerCase();
+
+      const filtered = all.filter((item) => {
+        if (statusFilter === 'suspicious') {
+          if (!item.suspicious && item.status !== 'suspicious') return false;
+        } else if (statusFilter !== 'all' && item.status !== statusFilter) {
+          return false;
+        }
+        if (userIdFilter && item.userId !== userIdFilter) return false;
+        if (search) {
+          const hay = `${item.userName || ''} ${item.email} ${item.role || ''} ${item.ipAddress || ''} ${item.reason || ''}`.toLowerCase();
+          if (!hay.includes(search)) return false;
+        }
+        return true;
+      });
+
+      res.json({
+        sessions: filtered,
+        currentSessionId: req.sessionUser?.sessionId || null,
+        summary: {
+          totalEvents: all.length,
+          activeSessions: all.filter((s) => s.status === 'active').length,
+          signedOutCount: all.filter((s) => s.status === 'signed_out').length,
+          suspiciousCount: all.filter((s) => s.suspicious || s.status === 'suspicious').length,
+          failedAttemptsCount: all.filter((s) => s.status === 'failed_login').length,
+          revokedCount: all.filter((s) => s.status === 'revoked').length,
+        },
+      });
+    }
+  );
+
+  router.post(
+    '/session-history/:id/revoke',
+    requireAuth,
+    requireRole(['owner']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const target = (db.sessionHistory || []).find((s) => s.id === req.params.id);
+      if (!target) {
+        res.status(404).json({ error: 'Session history record not found.' });
+        return;
+      }
+      if (target.sessionId && target.sessionId === req.sessionUser?.sessionId) {
+        res.status(400).json({ error: 'You cannot revoke your own active session. Use Sign Out instead.' });
+        return;
+      }
+      if (target.status !== 'active') {
+        res.status(400).json({ error: 'Only active sessions can be revoked.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      target.status = 'revoked';
+      target.logoutAt = now;
+      target.reason = `Session revoked by ${req.sessionUser!.name} (${req.sessionUser!.role})`;
+
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'SESSION_REVOKED',
+        'Security',
+        target.id,
+        `Revoked active session for ${target.email} (login ${target.loginAt}).`
+      );
+      writeDb(db);
+      res.json({ session: target });
+    }
+  );
 
   router.get('/backups', requireAuth, requireRole(['owner']), (_req, res) => {
     const db = readDb();

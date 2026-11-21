@@ -30,6 +30,40 @@ export interface SessionUser {
   employeeId?: string;
 }
 
+export type SessionEventStatus =
+  | 'active'
+  | 'signed_out'
+  | 'suspicious'
+  | 'failed_login'
+  | 'revoked';
+
+export interface UserSessionRecord {
+  id: string;
+  sessionId?: string;
+  userId?: string;
+  userName?: string;
+  email: string;
+  role?: UserRole;
+  authMethod: 'credentials' | 'google_workspace' | 'token';
+  status: SessionEventStatus;
+  loginAt: string;
+  logoutAt?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  reason?: string;
+  suspicious: boolean;
+  suspiciousSeverity?: 'low' | 'medium' | 'high';
+}
+
+export interface UserSessionSummary {
+  totalEvents: number;
+  activeSessions: number;
+  signedOutCount: number;
+  suspiciousCount: number;
+  failedAttemptsCount: number;
+  revokedCount: number;
+}
+
 export type PaymentMethod = 'Cash' | 'Mobile Money' | 'Bank Transfer' | 'Card' | 'Gift Card';
 export type AppointmentStatus =
   | 'Pending'
@@ -340,16 +374,29 @@ export interface DriveDocumentRecord {
 export interface SalonBranding {
   businessName: string;
   tagline: string;
+  audienceTagline?: string;
   location: string;
+  phone?: string;
+  socialHandle?: string;
+  socialPlatforms?: string[];
+  walkInsWelcome?: boolean;
+  promotionalBannerUrl?: string;
+  backgroundImageUrl?: string;
   salonLogoUrl?: string;
 }
 
 export interface SalonSettings {
   businessName: string;
   tagline: string;
+  audienceTagline?: string;
   location: string;
   phone: string;
   email: string;
+  socialHandle?: string;
+  socialPlatforms?: string[];
+  walkInsWelcome?: boolean;
+  promotionalBannerUrl?: string;
+  backgroundImageUrl?: string;
   currency: string;
   operatingHours: string;
   defaultAppointmentDuration: number;
@@ -374,5 +421,6 @@ export interface SalonSettings {
   googleSpreadsheetId?: string;
   googleSpreadsheetUrl?: string;
   googleDriveFolderId?: string;
+  googleAppsScriptUrl?: string;
   lastSheetsSyncAt?: string;
 }
