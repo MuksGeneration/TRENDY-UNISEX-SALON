@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, Lock, Mail, Scissors, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, Scissors, Calendar } from 'lucide-react';
 import { apiFetch, setSalonSessionToken } from '../lib/api';
 import { connectGoogleWorkspace } from '../lib/firebaseAuth';
 import type { SalonBranding, SessionUser } from '../types';
@@ -10,12 +10,6 @@ interface LoginViewProps {
   onOpenClientBooking?: () => void;
 }
 
-const STAFF_ROLES_PREVIEW = [
-  { role: 'Owner / Admin', email: 'owner@trendysalon.ug', pass: 'TrendyOwner2026!' },
-  { role: 'Manager', email: 'manager@trendysalon.ug', pass: 'TrendyManager2026!' },
-  { role: 'Stylist (Beatrice)', email: 'beatrice@trendysalon.ug', pass: 'TrendyStaff2026!' },
-];
-
 export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpenClientBooking }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -23,7 +17,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpe
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
-  const [showQuickFill, setShowQuickFill] = useState(false);
   const [imgError, setImgError] = useState(false);
 
   const handleCredentialLogin = async (e: React.FormEvent) => {
@@ -214,7 +207,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpe
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="owner@trendysalon.ug"
+                  placeholder="Enter your staff email"
                   className="w-full pl-10 pr-4 py-2.5 text-sm bg-[#F8EEEB]/60 border border-[#1D1717]/15 rounded-xl focus:outline-none focus:border-[#E83B84] focus:bg-white transition-colors"
                 />
               </div>
@@ -280,37 +273,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpe
               </span>
             </div>
           </button>
-
-          {/* Collapsible Staff Role Quick-Fill for Testing */}
-          <div className="mt-6 pt-5 border-t border-[#1D1717]/10">
-            <button
-              type="button"
-              onClick={() => setShowQuickFill((v) => !v)}
-              className="w-full flex items-center justify-between text-xs font-medium text-[#1D1717]/70 hover:text-[#E83B84] cursor-pointer"
-            >
-              <span>Staff Role Directory (Quick Fill)</span>
-              {showQuickFill ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-
-            {showQuickFill && (
-              <div className="mt-3 space-y-1.5">
-                {STAFF_ROLES_PREVIEW.map((item) => (
-                  <button
-                    key={item.email}
-                    type="button"
-                    onClick={() => {
-                      setEmail(item.email);
-                      setPassword(item.pass);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 text-left text-xs transition-colors cursor-pointer"
-                  >
-                    <span className="font-semibold text-[#1D1717]">{item.role}</span>
-                    <span className="text-[#1D1717]/65 font-mono">{item.email}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>
