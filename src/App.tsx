@@ -41,6 +41,58 @@ const DEFAULT_BRANDING: SalonBranding = {
   salonLogoUrl: '',
 };
 
+interface ErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode; onReset: () => void; onSignOut: () => void },
+  ErrorBoundaryState
+> {
+  state: ErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, message: error?.message || 'Unexpected rendering error.' };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-[60vh] flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white border border-red-200 rounded-2xl p-6 space-y-4 shadow-sm">
+            <h2 className="text-base font-bold text-[#1D1717]">Unable to load this view</h2>
+            <p className="text-xs text-[#1D1717]/70 leading-relaxed">{this.state.message}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  this.setState({ hasError: false, message: '' });
+                  this.props.onReset();
+                }}
+                className="px-4 py-2 rounded-xl bg-[#E83B84] text-white text-xs font-semibold hover:bg-[#d12d73] cursor-pointer"
+              >
+                Retry Dashboard
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  this.setState({ hasError: false, message: '' });
+                  this.props.onSignOut();
+                }}
+                className="px-4 py-2 rounded-xl bg-white border border-[#1D1717]/15 text-xs font-semibold text-[#1D1717] hover:bg-[#F8EEEB] cursor-pointer"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -227,64 +279,69 @@ export default function App() {
           </button>
         </div>
       )}
-      {activeSection === 'dashboard' && (
-        <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
-      )}
-      {activeSection === 'appointments' && (
-        <AppointmentsView
-          user={user}
-          branding={branding}
-          onCheckoutAppointment={(payload) => {
-            setPosPrefill(payload);
-            setActiveSection('pos');
-          }}
-        />
-      )}
-      {activeSection === 'pos' && (
-        <PosBillingView
-          user={user}
-          branding={branding}
-          prefill={posPrefill}
-          onClearPrefill={() => setPosPrefill(null)}
-        />
-      )}
-      {activeSection === 'customers' && <CustomersView user={user} />}
-      {(activeSection === 'employees' ||
-        activeSection === 'scheduling' ||
-        activeSection === 'attendance') && (
-        <EmployeesSchedulingView
-          mode={activeSection}
-          user={user}
-          googleConnected={effectiveWorkspaceConnected}
-          onConnectGoogle={handleHeaderWorkspaceAction}
-        />
-      )}
-      {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
-      {(activeSection === 'commissions' ||
-        activeSection === 'payments' ||
-        activeSection === 'lunch') && (
-        <CommissionsView mode={activeSection} user={user} />
-      )}
-      {(activeSection === 'expenses' || activeSection === 'inventory') && (
-        <ExpensesInventoryView mode={activeSection} user={user} />
-      )}
-      {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
-      {activeSection === 'reports' && <ReportsView user={user} />}
-      {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
-      {(activeSection === 'notifications' ||
-        activeSection === 'users' ||
-        activeSection === 'settings' ||
-        activeSection === 'audit-logs') && (
-        <AdminViews
-          mode={activeSection}
-          user={user}
-          googleConnected={googleConnected}
-          onConnectGoogle={handleConnectGoogle}
-          onRefreshNotifications={() => void refreshNotifications()}
-          onBrandingUpdated={() => void refreshBranding()}
-          onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
-        />
-      )}
+      <AppErrorBoundary
+        onReset={() => setActiveSection('dashboard')}
+        onSignOut={() => void handleLogout()}
+      >
+        {activeSection === 'dashboard' && (
+          <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
+        )}
+        {activeSection === 'appointments' && (
+          <AppointmentsView
+            user={user}
+            branding={branding}
+            onCheckoutAppointment={(payload) => {
+              setPosPrefill(payload);
+              setActiveSection('pos');
+            }}
+          />
+        )}
+        {activeSection === 'pos' && (
+          <PosBillingView
+            user={user}
+            branding={branding}
+            prefill={posPrefill}
+            onClearPrefill={() => setPosPrefill(null)}
+          />
+        )}
+        {activeSection === 'customers' && <CustomersView user={user} />}
+        {(activeSection === 'employees' ||
+          activeSection === 'scheduling' ||
+          activeSection === 'attendance') && (
+          <EmployeesSchedulingView
+            mode={activeSection}
+            user={user}
+            googleConnected={effectiveWorkspaceConnected}
+            onConnectGoogle={handleHeaderWorkspaceAction}
+          />
+        )}
+        {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
+        {(activeSection === 'commissions' ||
+          activeSection === 'payments' ||
+          activeSection === 'lunch') && (
+          <CommissionsView mode={activeSection} user={user} />
+        )}
+        {(activeSection === 'expenses' || activeSection === 'inventory') && (
+          <ExpensesInventoryView mode={activeSection} user={user} />
+        )}
+        {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
+        {activeSection === 'reports' && <ReportsView user={user} />}
+        {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
+        {(activeSection === 'notifications' ||
+          activeSection === 'users' ||
+          activeSection === 'settings' ||
+          activeSection === 'audit-logs') && (
+          <AdminViews
+            mode={activeSection}
+            user={user}
+            googleConnected={googleConnected}
+            onConnectGoogle={handleConnectGoogle}
+            onRefreshNotifications={() => void refreshNotifications()}
+            onBrandingUpdated={() => void refreshBranding()}
+            onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
+          />
+        )}
+      </AppErrorBoundary>
     </SidebarLayout>
   );
 }

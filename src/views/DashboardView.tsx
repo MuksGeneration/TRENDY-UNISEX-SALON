@@ -122,6 +122,7 @@ interface DashboardResponse {
     expenseBreakdown: Array<{ category: string; amount: number }>;
   };
   // Employee self-scope
+  employeeProfileLinked?: boolean;
   employee?: {
     fullName: string;
     roleTitle: string;
@@ -222,8 +223,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
 
   // EMPLOYEE SELF-SERVICE DASHBOARD
   if (data.roleScope === 'employee') {
-    const todayStats = data.todayStats!;
-    const summary = data.summary!;
+    const todayStats = data.todayStats ?? {
+      grossEarnings: 0,
+      lunchDeduction: 0,
+      netCommissionable: 0,
+      commissionEarned: 0,
+      servicesCount: 0,
+    };
+    const summary = data.summary ?? {
+      grossEarnings: 0,
+      totalLunchDeducted: 0,
+      totalCommissionEarned: 0,
+      totalPaid: 0,
+      outstandingBalance: 0,
+      directTips: 0,
+    };
     return (
       <div className="space-y-6">
         <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -265,7 +279,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                 })()}
               </div>
               <p className="text-xs text-[#1D1717]/65 mt-0.5">
-                {data.employee?.roleTitle} &middot; Personal Earnings &amp; Schedule ({data.today})
+                {data.employee?.roleTitle || 'Salon Staff'} &middot; Personal Earnings &amp; Schedule ({data.today})
               </p>
             </div>
           </div>
@@ -276,6 +290,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
             View My Commission Ledger
           </button>
         </div>
+
+        {!data.employee && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
+            <strong>Profile Not Yet Linked:</strong> Your login account is active, but it is not linked to an employee stylist record yet. Ask the salon Owner or Manager to add your employee profile and link it to your account so your commissions and shifts appear here.
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <MetricCard label="Today's Gross Services" value={formatUGX(todayStats.grossEarnings)} sub={`${todayStats.servicesCount} services`} />
@@ -294,7 +314,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                 <div key={apt.id} className="py-3 flex items-center justify-between gap-4 text-sm">
                   <div>
                     <div className="font-semibold text-[#1D1717]">{apt.customerName}</div>
-                    <div className="text-xs text-[#1D1717]/60">{apt.serviceNames.join(', ')}</div>
+                    <div className="text-xs text-[#1D1717]/60">{(apt.serviceNames || []).join(', ')}</div>
                   </div>
                   <div className="text-right font-mono text-xs tabular-nums">
                     <div className="font-semibold text-[#1D1717]">{apt.date} &middot; {apt.startTime}</div>
@@ -309,10 +329,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
     );
   }
 
-  const tm = data.todayMetrics!;
-  const fo = data.financialOverview!;
-  const oo = data.operationalOverview!;
-  const charts = data.charts!;
+  if (!data.todayMetrics || !data.financialOverview || !data.operationalOverview || !data.charts) {
+    return (
+      <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 text-sm text-[#1D1717]/75">
+        Unable to display dashboard summary for this role. Please refresh or sign out and sign back in.
+      </div>
+    );
+  }
+
+  const tm = data.todayMetrics;
+  const fo = data.financialOverview;
+  const oo = data.operationalOverview;
+  const charts = data.charts;
 
   const weekData = (charts.weeklyRevenueTrend || []).map((d) => ({
     label: d.isToday ? `${d.dayLabel} (Today)` : `${d.dayLabel} ${d.date.slice(8)}`,

@@ -323,7 +323,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         (emp.secondaryPhone || '').toLowerCase().includes(q) ||
         (emp.nationalId || '').toLowerCase().includes(q) ||
         (emp.homeAddress || '').toLowerCase().includes(q) ||
-        emp.specialties.some((s) => s.toLowerCase().includes(q))
+        (emp.specialties || []).some((s) => s.toLowerCase().includes(q))
       );
     });
   }, [employees, searchQuery, statusFilter]);
@@ -1015,7 +1015,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   <div className="text-xs text-[#1D1717]/75 space-y-1">
                     <div>
                       <span className="font-semibold">Specialties:</span>{' '}
-                      {emp.specialties.join(' · ') || 'General'}
+                      {(emp.specialties || []).join(' · ') || 'General'}
                     </div>
                     <div className="font-mono text-[#1D1717]/60">
                       Shift: {emp.defaultShiftStart}–{emp.defaultShiftEnd} &middot;{' '}

@@ -97,6 +97,27 @@ function getLoyaltyTier(points: number): Customer['loyaltyTier'] {
   return 'Bronze';
 }
 
+function resolveEmployeeForUser(
+  db: SalonDatabase,
+  user: { employeeId?: string; email?: string; name?: string }
+): Employee | undefined {
+  if (user.employeeId) {
+    const byId = db.employees.find((e) => e.id === user.employeeId);
+    if (byId) return byId;
+  }
+  const email = (user.email || '').trim().toLowerCase();
+  if (email) {
+    const byEmail = db.employees.find((e) => (e.email || '').trim().toLowerCase() === email);
+    if (byEmail) return byEmail;
+  }
+  const name = (user.name || '').trim().toLowerCase();
+  if (name) {
+    const byName = db.employees.find((e) => e.fullName.trim().toLowerCase() === name);
+    if (byName) return byName;
+  }
+  return undefined;
+}
+
 export function createApiRouter() {
   const router = express.Router();
 
@@ -172,6 +193,10 @@ export function createApiRouter() {
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
     user.lastLoginAt = now;
+    if (user.role === 'employee' && !user.employeeId) {
+      const matchedEmp = resolveEmployeeForUser(db, user);
+      if (matchedEmp) user.employeeId = matchedEmp.id;
+    }
     const hadPriorFailures = recentFailures >= 2;
 
     recordSessionEvent(db, {
@@ -312,6 +337,10 @@ export function createApiRouter() {
       const now = new Date().toISOString();
       const sessionId = crypto.randomUUID();
       user.lastLoginAt = now;
+      if (user.role === 'employee' && !user.employeeId) {
+        const matchedEmp = resolveEmployeeForUser(db, user);
+        if (matchedEmp) user.employeeId = matchedEmp.id;
+      }
       recordSessionEvent(db, {
         sessionId,
         userId: user.id,
@@ -425,23 +454,39 @@ export function createApiRouter() {
     const endDate = (req.query.endDate as string) || today;
 
     if (user.role === 'employee') {
-      const empId = user.employeeId || '';
-      const emp = db.employees.find((e) => e.id === empId);
-      const summary = empId ? getEmployeeCommissionSummary(db, empId) : null;
-      const todayLedger = db.commissionLedger.filter(
-        (c) => c.employeeId === empId && c.date === today && c.paymentStatus !== 'Reversed'
-      );
-      const todayLunch = db.lunchDeductions
-        .filter((l) => l.employeeId === empId && l.date === today)
-        .reduce((s, l) => s + l.amount, 0);
-      const upcomingAppointments = db.appointments
-        .filter((a) => a.employeeId === empId && a.date >= today && a.status !== 'Cancelled')
-        .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`))
-        .slice(0, 10);
+      const emp = resolveEmployeeForUser(db, user);
+      const empId = emp?.id || user.employeeId || '';
+      const summary = empId
+        ? getEmployeeCommissionSummary(db, empId)
+        : {
+            grossEarnings: 0,
+            totalLunchDeducted: 0,
+            totalCommissionEarned: 0,
+            totalPaid: 0,
+            outstandingBalance: 0,
+            directTips: 0,
+          };
+      const todayLedger = empId
+        ? db.commissionLedger.filter(
+            (c) => c.employeeId === empId && c.date === today && c.paymentStatus !== 'Reversed'
+          )
+        : [];
+      const todayLunch = empId
+        ? db.lunchDeductions
+            .filter((l) => l.employeeId === empId && l.date === today)
+            .reduce((s, l) => s + l.amount, 0)
+        : 0;
+      const upcomingAppointments = empId
+        ? db.appointments
+            .filter((a) => a.employeeId === empId && a.date >= today && a.status !== 'Cancelled')
+            .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`))
+            .slice(0, 10)
+        : [];
 
       res.json({
         roleScope: 'employee',
         today,
+        employeeProfileLinked: Boolean(emp),
         employee: emp ? { ...emp, status: resolveEmployeeStatus(emp) } : undefined,
         todayStats: {
           grossEarnings: todayLedger.reduce((s, c) => s + c.grossEarnings, 0),
@@ -452,10 +497,12 @@ export function createApiRouter() {
         },
         summary,
         upcomingAppointments,
-        recentLedger: db.commissionLedger
-          .filter((c) => c.employeeId === empId)
-          .slice(-20)
-          .reverse(),
+        recentLedger: empId
+          ? db.commissionLedger
+              .filter((c) => c.employeeId === empId)
+              .slice(-20)
+              .reverse()
+          : [],
       });
       return;
     }
@@ -699,7 +746,8 @@ export function createApiRouter() {
     const user = req.sessionUser!;
     let list = [...db.appointments];
     if (user.role === 'employee') {
-      list = list.filter((a) => a.employeeId === user.employeeId);
+      const empId = resolveEmployeeForUser(db, user)?.id || user.employeeId || '';
+      list = empId ? list.filter((a) => a.employeeId === empId) : [];
     }
     list.sort((a, b) => `${b.date}${b.startTime}`.localeCompare(`${a.date}${a.startTime}`));
     res.json({ appointments: list, walkIns: db.walkIns });
@@ -1284,7 +1332,8 @@ export function createApiRouter() {
     const db = readDb();
     const user = req.sessionUser!;
     if (user.role === 'employee') {
-      const me = db.employees.filter((e) => e.id === user.employeeId);
+      const emp = resolveEmployeeForUser(db, user);
+      const me = emp ? [emp] : [];
       res.json({
         employees: me.map((e) => ({
           ...e,
@@ -1761,9 +1810,12 @@ export function createApiRouter() {
   router.get('/schedules', requireAuth, (req: AuthenticatedRequest, res) => {
     const db = readDb();
     const user = req.sessionUser!;
+    const empId = user.role === 'employee' ? resolveEmployeeForUser(db, user)?.id || user.employeeId || '' : '';
     const schedules =
       user.role === 'employee'
-        ? db.schedules.filter((s) => s.employeeId === user.employeeId)
+        ? empId
+          ? db.schedules.filter((s) => s.employeeId === empId)
+          : []
         : db.schedules;
     res.json({ schedules });
   });
@@ -1806,9 +1858,12 @@ export function createApiRouter() {
   router.get('/attendance', requireAuth, (req: AuthenticatedRequest, res) => {
     const db = readDb();
     const user = req.sessionUser!;
+    const empId = user.role === 'employee' ? resolveEmployeeForUser(db, user)?.id || user.employeeId || '' : '';
     const records =
       user.role === 'employee'
-        ? db.attendance.filter((a) => a.employeeId === user.employeeId)
+        ? empId
+          ? db.attendance.filter((a) => a.employeeId === empId)
+          : []
         : db.attendance;
     res.json({ attendance: [...records].reverse() });
   });
@@ -2497,14 +2552,14 @@ export function createApiRouter() {
     const user = req.sessionUser!;
 
     if (user.role === 'employee') {
-      const empId = user.employeeId || '';
-      const emp = db.employees.find((e) => e.id === empId);
+      const emp = resolveEmployeeForUser(db, user);
+      const empId = emp?.id || user.employeeId || '';
       res.json({
         policies: db.commissionPolicies,
-        ledger: db.commissionLedger.filter((c) => c.employeeId === empId).reverse(),
-        lunchDeductions: db.lunchDeductions.filter((l) => l.employeeId === empId).reverse(),
-        payments: db.commissionPayments.filter((p) => p.employeeId === empId).reverse(),
-        adjustments: db.commissionAdjustments.filter((a) => a.employeeId === empId).reverse(),
+        ledger: empId ? db.commissionLedger.filter((c) => c.employeeId === empId).reverse() : [],
+        lunchDeductions: empId ? db.lunchDeductions.filter((l) => l.employeeId === empId).reverse() : [],
+        payments: empId ? db.commissionPayments.filter((p) => p.employeeId === empId).reverse() : [],
+        adjustments: empId ? db.commissionAdjustments.filter((a) => a.employeeId === empId).reverse() : [],
         summaries: emp
           ? [{ employeeId: emp.id, employeeName: emp.fullName, ...getEmployeeCommissionSummary(db, emp.id) }]
           : [],
@@ -4429,11 +4484,14 @@ export function createApiRouter() {
     const user = req.sessionUser!;
     let documents = [...db.driveDocuments];
     if (user.role === 'employee') {
-      documents = documents.filter(
-        (d) =>
-          d.relatedEmployeeId === user.employeeId &&
-          (d.category === 'Employee Photo' || d.category === 'National ID' || d.category === 'Staff Contract')
-      );
+      const empId = resolveEmployeeForUser(db, user)?.id || user.employeeId || '';
+      documents = empId
+        ? documents.filter(
+            (d) =>
+              d.relatedEmployeeId === empId &&
+              (d.category === 'Employee Photo' || d.category === 'National ID' || d.category === 'Staff Contract')
+          )
+        : [];
     }
 
     let driveFiles: Array<{
@@ -5066,12 +5124,16 @@ export function createApiRouter() {
       res.status(400).json({ error: 'Invalid user role. Allowed roles: owner, manager, employee.' });
       return;
     }
+    const resolvedEmpId =
+      targetRole === 'employee'
+        ? employeeId || resolveEmployeeForUser(db, { email, name })?.id
+        : undefined;
     const newUser = {
       id: makeId('USR'),
       name: name.trim(),
       email: email.trim().toLowerCase(),
       role: targetRole,
-      employeeId,
+      employeeId: resolvedEmpId,
       passwordHash: hashPassword(password),
       active: true,
       createdAt: new Date().toISOString(),
