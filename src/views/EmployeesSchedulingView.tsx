@@ -284,6 +284,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
 
   const isOwner = user.role === 'owner';
   const isManager = user.role === 'manager';
+  const isEmployeeSelf = user.role === 'employee';
   const canManage = isOwner || isManager;
   const canLogAttendance = ['owner', 'manager'].includes(user.role);
 
@@ -355,6 +356,37 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setShowEmpModal(true);
   };
 
+  const openSelfProfileModal = () => {
+    if (employees.length > 0) {
+      openEditEmployeeModal(employees[0]);
+      return;
+    }
+    setEditingEmpId(null);
+    setEmpName(user.name || '');
+    setEmpRole('Salon Stylist');
+    setEmpPhone('');
+    setEmpSecondaryPhone('');
+    setEmpEmail(user.email || '');
+    setEmpNationalId('');
+    setEmpIdFrontUrl('');
+    setEmpIdBackUrl('');
+    setEmpHomeAddress('');
+    setEmpEmergencyName('');
+    setEmpEmergencyPhone('');
+    setEmpAvatarUrl('');
+    setEmpHireDate(new Date().toISOString().slice(0, 10));
+    setEmpSpecialties('');
+    setEmpShiftStart('08:00');
+    setEmpShiftEnd('20:00');
+    setEmpWorkingDays(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+    setEmpLunchEligible(true);
+    setEmpStatus('Active');
+    setEmpLastDocUpdatedAt(undefined);
+    setEmpLastDocUpdatedBy(undefined);
+    setError('');
+    setShowEmpModal(true);
+  };
+
   const openEditEmployeeModal = (emp: EmployeeRecord) => {
     setEditingEmpId(emp.id);
     setEmpName(emp.fullName);
@@ -370,7 +402,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpEmergencyPhone(emp.emergencyContactPhone || '');
     setEmpAvatarUrl(emp.avatarUrl || '');
     setEmpHireDate(emp.hireDate || new Date().toISOString().slice(0, 10));
-    setEmpSpecialties(emp.specialties.join(', '));
+    setEmpSpecialties((emp.specialties || []).join(', '));
     setEmpShiftStart(emp.defaultShiftStart || '08:00');
     setEmpShiftEnd(emp.defaultShiftEnd || '20:00');
     setEmpWorkingDays(emp.workingDays?.length ? emp.workingDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
@@ -488,16 +520,19 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
               : `Updated profile for ${empName}.`
         );
       } else {
-        saveRes = await apiFetch<{ employee: EmployeeRecord; driveWarning?: string }>('/api/employees', {
+        const endpoint = isEmployeeSelf ? '/api/employees/me' : '/api/employees';
+        saveRes = await apiFetch<{ employee: EmployeeRecord; driveWarning?: string }>(endpoint, {
           method: 'POST',
           body: JSON.stringify(payload),
         });
         setMsg(
-          saveRes.driveWarning
-            ? `Registered new employee: ${empName}.`
-            : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-              ? `Registered ${empName} and stored photo/ID documents on Google Drive.`
-              : `Registered new employee: ${empName}.`
+          isEmployeeSelf
+            ? `Your employee profile has been saved.`
+            : saveRes.driveWarning
+              ? `Registered new employee: ${empName}.`
+              : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
+                ? `Registered ${empName} and stored photo/ID documents on Google Drive.`
+                : `Registered new employee: ${empName}.`
         );
       }
       if (saveRes.driveWarning) {
@@ -789,6 +824,16 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   </button>
                 </>
               )}
+              {isEmployeeSelf && (
+                <button
+                  type="button"
+                  onClick={openSelfProfileModal}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  {employees.length > 0 ? 'Edit My Profile' : 'Fill My Profile'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -1064,12 +1109,21 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   >
                     <UserRound className="w-3.5 h-3.5" /> Profile
                   </button>
-                  {(canManage || user.employeeId === emp.id) && (
+                  {(canManage || user.employeeId === emp.id || isEmployeeSelf) && (
                     <button
                       onClick={() => void openStatement(emp.id)}
                       className="flex-1 py-2 px-3 rounded-xl bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 text-xs font-semibold text-[#1D1717] cursor-pointer"
                     >
                       Statement
+                    </button>
+                  )}
+                  {isEmployeeSelf && !canManage && (
+                    <button
+                      type="button"
+                      onClick={() => openEditEmployeeModal(emp)}
+                      className="px-3 py-2 rounded-xl bg-[#1D1717] text-white hover:bg-[#1D1717]/85 text-xs font-semibold cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Pencil className="w-3 h-3" /> Edit Profile
                     </button>
                   )}
                   {canManage && (
@@ -1120,8 +1174,26 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
           </div>
 
           {filteredEmployees.length === 0 && (
-            <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-10 text-center text-xs text-[#1D1717]/60">
-              No employees match your current search or filter criteria.
+            <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-10 text-center space-y-3">
+              {isEmployeeSelf && employees.length === 0 ? (
+                <>
+                  <h3 className="text-sm font-bold text-[#1D1717]">Complete Your Staff Profile</h3>
+                  <p className="text-xs text-[#1D1717]/65 max-w-md mx-auto">
+                    Fill in your profile picture, National ID (NIN), contact phone numbers, home address, and emergency contact details. Once saved, your profile can be updated anytime and can only be deleted by the Salon Owner.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openSelfProfileModal}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> Fill My Profile
+                  </button>
+                </>
+              ) : (
+                <p className="text-xs text-[#1D1717]/60">
+                  No employees match your current search or filter criteria.
+                </p>
+              )}
             </div>
           )}
         </>
@@ -1382,10 +1454,18 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
             <div className="flex items-center justify-between border-b border-[#1D1717]/10 pb-3">
               <div>
                 <h3 className="text-lg font-bold">
-                  {editingEmpId ? `Edit Employee Profile — ${empName}` : 'Register Salon Employee'}
+                  {isEmployeeSelf
+                    ? editingEmpId
+                      ? 'Edit My Staff Profile'
+                      : 'Fill My Staff Profile'
+                    : editingEmpId
+                      ? `Edit Employee Profile — ${empName}`
+                      : 'Register Salon Employee'}
                 </h3>
                 <p className="text-xs text-[#1D1717]/60">
-                  Capture profile photo, National ID (NIN), contact numbers, residential address, and shift setup
+                  {isEmployeeSelf
+                    ? 'Update your profile photo, National ID (NIN), contacts, home address, and emergency contact. Employment terms are managed by administration.'
+                    : 'Capture profile photo, National ID (NIN), contact numbers, residential address, and shift setup'}
                 </p>
               </div>
               <button
@@ -1464,10 +1544,11 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 <label className="block font-semibold mb-1">Role / Position Title *</label>
                 <input
                   required
+                  disabled={isEmployeeSelf}
                   value={empRole}
                   onChange={(e) => setEmpRole(e.target.value)}
                   placeholder="e.g. Senior Hair Braider"
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
+                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 disabled:bg-[#F8EEEB] disabled:text-[#1D1717]/65"
                 />
               </div>
 
@@ -1484,9 +1565,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 <label className="block font-semibold mb-1">Hire Date</label>
                 <input
                   type="date"
+                  disabled={isEmployeeSelf}
                   value={empHireDate}
                   onChange={(e) => setEmpHireDate(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono disabled:bg-[#F8EEEB] disabled:text-[#1D1717]/65"
                 />
               </div>
 
@@ -1719,82 +1801,86 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold mb-1">Default Shift Start</label>
-                <input
-                  type="time"
-                  value={empShiftStart}
-                  onChange={(e) => setEmpShiftStart(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Default Shift End</label>
-                <input
-                  type="time"
-                  value={empShiftEnd}
-                  onChange={(e) => setEmpShiftEnd(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                />
-              </div>
+              {!isEmployeeSelf && (
+                <>
+                  <div>
+                    <label className="block font-semibold mb-1">Default Shift Start</label>
+                    <input
+                      type="time"
+                      value={empShiftStart}
+                      onChange={(e) => setEmpShiftStart(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Default Shift End</label>
+                    <input
+                      type="time"
+                      value={empShiftEnd}
+                      onChange={(e) => setEmpShiftEnd(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                    />
+                  </div>
 
-              <div className="sm:col-span-2">
-                <label className="block font-semibold mb-1.5">Working Days</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_DAYS.map((day) => {
-                    const selected = empWorkingDays.includes(day);
-                    return (
-                      <button
-                        key={day}
-                        type="button"
-                        onClick={() => toggleWorkingDay(day)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer border ${
-                          selected
-                            ? 'bg-[#E83B84] text-white border-[#E83B84]'
-                            : 'bg-white text-[#1D1717]/70 border-[#1D1717]/15 hover:bg-[#F8EEEB]'
-                        }`}
-                      >
-                        {day}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+                  <div className="sm:col-span-2">
+                    <label className="block font-semibold mb-1.5">Working Days</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {ALL_DAYS.map((day) => {
+                        const selected = empWorkingDays.includes(day);
+                        return (
+                          <button
+                            key={day}
+                            type="button"
+                            onClick={() => toggleWorkingDay(day)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer border ${
+                              selected
+                                ? 'bg-[#E83B84] text-white border-[#E83B84]'
+                                : 'bg-white text-[#1D1717]/70 border-[#1D1717]/15 hover:bg-[#F8EEEB]'
+                            }`}
+                          >
+                            {day}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
 
-              <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 items-center pt-1">
-                <div>
-                  <label className="block font-semibold mb-1">Employment Status</label>
-                  <select
-                    value={empStatus}
-                    disabled={
-                      Boolean(editingEmpId) &&
-                      isManager &&
-                      getEmployeeStatus(
-                        employees.find((item) => item.id === editingEmpId) || {
-                          active: true,
-                          status: 'Active',
+                  <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 items-center pt-1">
+                    <div>
+                      <label className="block font-semibold mb-1">Employment Status</label>
+                      <select
+                        value={empStatus}
+                        disabled={
+                          Boolean(editingEmpId) &&
+                          isManager &&
+                          getEmployeeStatus(
+                            employees.find((item) => item.id === editingEmpId) || {
+                              active: true,
+                              status: 'Active',
+                            }
+                          ) === 'Inactive'
                         }
-                      ) === 'Inactive'
-                    }
-                    onChange={(e) => setEmpStatus(e.target.value as EmployeeStatus)}
-                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-semibold disabled:opacity-55 disabled:cursor-not-allowed"
-                  >
-                    {EMPLOYEE_STATUS_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 font-semibold cursor-pointer sm:pt-5">
-                  <input
-                    type="checkbox"
-                    checked={empLunchEligible}
-                    onChange={(e) => setEmpLunchEligible(e.target.checked)}
-                  />
-                  <span>Eligible for daily UGX 2,500 lunch deduction</span>
-                </label>
-              </div>
+                        onChange={(e) => setEmpStatus(e.target.value as EmployeeStatus)}
+                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-semibold disabled:opacity-55 disabled:cursor-not-allowed"
+                      >
+                        {EMPLOYEE_STATUS_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 font-semibold cursor-pointer sm:pt-5">
+                      <input
+                        type="checkbox"
+                        checked={empLunchEligible}
+                        onChange={(e) => setEmpLunchEligible(e.target.checked)}
+                      />
+                      <span>Eligible for daily UGX 2,500 lunch deduction</span>
+                    </label>
+                  </div>
+                </>
+              )}
               {editingEmpId && (
                 <div className="sm:col-span-2 flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[#F8EEEB] text-[11px] text-[#1D1717]/75">
                   <span className="inline-flex items-center gap-1.5 font-semibold">
@@ -1822,7 +1908,13 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 disabled={savingEmp}
                 className="px-5 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
-                {savingEmp ? 'Saving...' : editingEmpId ? 'Save Changes' : 'Register Employee'}
+                {savingEmp
+                  ? 'Saving...'
+                  : editingEmpId
+                    ? 'Save Changes'
+                    : isEmployeeSelf
+                      ? 'Save My Profile'
+                      : 'Register Employee'}
               </button>
             </div>
           </form>
@@ -2136,7 +2228,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 <div className="text-[#1D1717]/70">
                   Shift: <span className="font-mono font-semibold">{profileEmp.defaultShiftStart}–{profileEmp.defaultShiftEnd}</span> ({profileEmp.workingDays.join(', ')})
                 </div>
-                {canManage && (
+                {(canManage || isEmployeeSelf) && (
                   <button
                     onClick={() => {
                       const target = profileEmp;
@@ -2145,7 +2237,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                     }}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer"
                   >
-                    <Pencil className="w-3.5 h-3.5" /> Edit Details
+                    <Pencil className="w-3.5 h-3.5" /> {isEmployeeSelf && !canManage ? 'Edit My Profile' : 'Edit Details'}
                   </button>
                 )}
               </div>

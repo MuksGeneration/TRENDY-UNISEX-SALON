@@ -99,10 +99,13 @@ function getLoyaltyTier(points: number): Customer['loyaltyTier'] {
 
 function resolveEmployeeForUser(
   db: SalonDatabase,
-  user: { employeeId?: string; email?: string; name?: string }
+  user: { userId?: string; id?: string; employeeId?: string; email?: string; name?: string }
 ): Employee | undefined {
-  if (user.employeeId) {
-    const byId = db.employees.find((e) => e.id === user.employeeId);
+  const uid = user.userId || user.id;
+  const linkedEmpId = uid ? db.users.find((u) => u.id === uid)?.employeeId : undefined;
+  const candidateId = user.employeeId || linkedEmpId;
+  if (candidateId) {
+    const byId = db.employees.find((e) => e.id === candidateId);
     if (byId) return byId;
   }
   const email = (user.email || '').trim().toLowerCase();
@@ -442,7 +445,16 @@ export function createApiRouter() {
   });
 
   router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
-    res.json({ user: req.sessionUser });
+    const db = readDb();
+    const sessionUser = req.sessionUser!;
+    const resolvedEmp =
+      sessionUser.role === 'employee' ? resolveEmployeeForUser(db, sessionUser) : undefined;
+    res.json({
+      user: {
+        ...sessionUser,
+        employeeId: resolvedEmp?.id || sessionUser.employeeId,
+      },
+    });
   });
 
   // ==================== DASHBOARD ====================
@@ -1487,16 +1499,145 @@ export function createApiRouter() {
     }
   );
 
+  // Self-service employee profile creation when an employee login is not yet linked
+  router.post(
+    '/employees/me',
+    requireAuth,
+    requireRole(['employee']),
+    async (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const user = req.sessionUser!;
+      const existing = resolveEmployeeForUser(db, user);
+      if (existing) {
+        res.status(409).json({
+          error: 'Your employee profile already exists. Please use Edit My Profile to update your details.',
+        });
+        return;
+      }
+
+      const body = req.body as Partial<Employee>;
+      const fullName = (body.fullName || user.name || '').trim();
+      const phone = (body.phone || '').trim();
+      if (!fullName || !phone) {
+        res.status(400).json({ error: 'Full name and primary contact phone are required.' });
+        return;
+      }
+
+      let avatarUrl: string | undefined;
+      let nationalIdDocumentUrl: string | undefined;
+      let nationalIdBackUrl: string | undefined;
+      try {
+        avatarUrl = sanitizeAvatarUrl(body.avatarUrl);
+        nationalIdDocumentUrl = sanitizeNationalIdDocUrl(body.nationalIdDocumentUrl, 'National ID Front');
+        nationalIdBackUrl = sanitizeNationalIdDocUrl(body.nationalIdBackUrl, 'National ID Back');
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid file upload.' });
+        return;
+      }
+
+      const normalizedNin = body.nationalId?.trim().toUpperCase() || '';
+      if (
+        normalizedNin &&
+        db.employees.some((e) => (e.nationalId || '').trim().toUpperCase() === normalizedNin)
+      ) {
+        res.status(409).json({ error: `National ID ${normalizedNin} is already registered to another employee.` });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const emp: Employee = {
+        id: makeId('EMP'),
+        fullName,
+        roleTitle: body.roleTitle?.trim() || 'Salon Stylist',
+        phone,
+        secondaryPhone: body.secondaryPhone?.trim() || '',
+        email: (body.email || user.email || '').trim(),
+        nationalId: normalizedNin,
+        nationalIdDocumentUrl: nationalIdDocumentUrl || undefined,
+        nationalIdBackUrl: nationalIdBackUrl || undefined,
+        homeAddress: body.homeAddress?.trim() || '',
+        emergencyContactName: body.emergencyContactName?.trim() || '',
+        emergencyContactPhone: body.emergencyContactPhone?.trim() || '',
+        specialties: Array.isArray(body.specialties) ? body.specialties : [],
+        avatarUrl: avatarUrl || undefined,
+        status: 'Active',
+        active: true,
+        hireDate: todayIsoDate(),
+        lastDocumentUpdatedAt: nowIso,
+        lastDocumentUpdatedBy: user.name,
+        lunchEligible: true,
+        defaultShiftStart: '08:00',
+        defaultShiftEnd: '20:00',
+        workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+      };
+
+      let driveWarning: string | undefined;
+      const googleToken = req.headers['x-google-token']?.toString();
+      if (googleToken) {
+        try {
+          if (emp.avatarUrl?.startsWith('data:')) {
+            const up = await uploadEmployeeDataUrlToDrive(googleToken, db, emp, 'avatar', emp.avatarUrl, user.name);
+            emp.avatarDriveFileId = up.fileId;
+            emp.avatarDriveLink = up.webViewLink;
+          }
+          if (emp.nationalIdDocumentUrl?.startsWith('data:')) {
+            const up = await uploadEmployeeDataUrlToDrive(googleToken, db, emp, 'id_front', emp.nationalIdDocumentUrl, user.name);
+            emp.nationalIdFrontDriveFileId = up.fileId;
+            emp.nationalIdFrontDriveLink = up.webViewLink;
+          }
+          if (emp.nationalIdBackUrl?.startsWith('data:')) {
+            const up = await uploadEmployeeDataUrlToDrive(googleToken, db, emp, 'id_back', emp.nationalIdBackUrl, user.name);
+            emp.nationalIdBackDriveFileId = up.fileId;
+            emp.nationalIdBackDriveLink = up.webViewLink;
+          }
+        } catch (err) {
+          driveWarning =
+            err instanceof Error
+              ? `Profile saved locally, but Google Drive upload failed: ${err.message}`
+              : 'Profile saved locally, but Google Drive upload failed.';
+        }
+      }
+
+      db.employees.push(emp);
+      const dbUser = db.users.find((u) => u.id === user.userId);
+      if (dbUser) {
+        dbUser.employeeId = emp.id;
+        dbUser.name = emp.fullName;
+      }
+
+      appendAuditLog(
+        db,
+        user,
+        'EMPLOYEE_SELF_PROFILE_CREATED',
+        'Employee',
+        emp.id,
+        `Employee ${emp.fullName} completed their self-service staff profile.`
+      );
+      writeDb(db);
+      res.status(201).json({ employee: { ...emp, status: resolveEmployeeStatus(emp) }, driveWarning });
+    }
+  );
+
   router.patch(
     '/employees/:id',
     requireAuth,
-    requireRole(['owner', 'manager']),
+    requireRole(['owner', 'manager', 'employee']),
     async (req: AuthenticatedRequest, res) => {
       const db = readDb();
+      const actor = req.sessionUser!;
       const emp = db.employees.find((e) => e.id === req.params.id);
       if (!emp) {
         res.status(404).json({ error: 'Employee not found.' });
         return;
+      }
+
+      const isSelfEmployee = actor.role === 'employee';
+      if (isSelfEmployee) {
+        const ownEmp = resolveEmployeeForUser(db, actor);
+        if (!ownEmp || ownEmp.id !== emp.id) {
+          res.status(403).json({ error: 'Employees can only fill or update their own profile.' });
+          return;
+        }
       }
 
       const body = req.body as Partial<Employee>;
@@ -1552,8 +1693,9 @@ export function createApiRouter() {
       }
 
       const currentStatus = resolveEmployeeStatus(emp);
-      const nextStatus: EmployeeStatus =
-        body.status !== undefined
+      const nextStatus: EmployeeStatus = isSelfEmployee
+        ? currentStatus
+        : body.status !== undefined
           ? body.status
           : body.active !== undefined
             ? body.active
@@ -1562,7 +1704,8 @@ export function createApiRouter() {
             : currentStatus;
 
       if (
-        req.sessionUser!.role === 'manager' &&
+        !isSelfEmployee &&
+        actor.role === 'manager' &&
         currentStatus === 'Inactive' &&
         nextStatus !== 'Inactive'
       ) {
@@ -1576,7 +1719,8 @@ export function createApiRouter() {
       const nextActive = nextStatus === 'Active';
 
       const nextFullName = body.fullName !== undefined ? body.fullName.trim() : emp.fullName;
-      const nextRoleTitle = body.roleTitle !== undefined ? body.roleTitle.trim() : emp.roleTitle;
+      const nextRoleTitle =
+        !isSelfEmployee && body.roleTitle !== undefined ? body.roleTitle.trim() : emp.roleTitle;
       const nextPhone = body.phone !== undefined ? body.phone.trim() : emp.phone;
       const nextSecondaryPhone =
         body.secondaryPhone !== undefined ? body.secondaryPhone.trim() : emp.secondaryPhone || '';
@@ -1591,7 +1735,7 @@ export function createApiRouter() {
         body.emergencyContactPhone !== undefined
           ? body.emergencyContactPhone.trim()
           : emp.emergencyContactPhone || '';
-      const nextHireDate = body.hireDate || emp.hireDate;
+      const nextHireDate = !isSelfEmployee ? body.hireDate || emp.hireDate : emp.hireDate;
       const nextSpecialties = Array.isArray(body.specialties) ? body.specialties : emp.specialties;
 
       const recordsOrIdModified =
@@ -1631,13 +1775,13 @@ export function createApiRouter() {
           ? new Date().toISOString()
           : emp.lastDocumentUpdatedAt,
         lastDocumentUpdatedBy: recordsOrIdModified
-          ? req.sessionUser!.name
+          ? actor.name
           : emp.lastDocumentUpdatedBy,
-        lunchEligible: body.lunchEligible ?? emp.lunchEligible,
-        defaultShiftStart: body.defaultShiftStart || emp.defaultShiftStart,
-        defaultShiftEnd: body.defaultShiftEnd || emp.defaultShiftEnd,
+        lunchEligible: !isSelfEmployee ? body.lunchEligible ?? emp.lunchEligible : emp.lunchEligible,
+        defaultShiftStart: !isSelfEmployee ? body.defaultShiftStart || emp.defaultShiftStart : emp.defaultShiftStart,
+        defaultShiftEnd: !isSelfEmployee ? body.defaultShiftEnd || emp.defaultShiftEnd : emp.defaultShiftEnd,
         workingDays:
-          Array.isArray(body.workingDays) && body.workingDays.length > 0
+          !isSelfEmployee && Array.isArray(body.workingDays) && body.workingDays.length > 0
             ? body.workingDays
             : emp.workingDays,
       });
@@ -1666,7 +1810,7 @@ export function createApiRouter() {
               emp,
               'avatar',
               nextAvatar,
-              req.sessionUser!.name
+              actor.name
             );
             emp.avatarDriveFileId = up.fileId;
             emp.avatarDriveLink = up.webViewLink;
@@ -1681,7 +1825,7 @@ export function createApiRouter() {
               emp,
               'id_front',
               nextIdFront,
-              req.sessionUser!.name
+              actor.name
             );
             emp.nationalIdFrontDriveFileId = up.fileId;
             emp.nationalIdFrontDriveLink = up.webViewLink;
@@ -1696,7 +1840,7 @@ export function createApiRouter() {
               emp,
               'id_back',
               nextIdBack,
-              req.sessionUser!.name
+              actor.name
             );
             emp.nationalIdBackDriveFileId = up.fileId;
             emp.nationalIdBackDriveLink = up.webViewLink;
@@ -1712,7 +1856,10 @@ export function createApiRouter() {
       // Keep linked login user's display name aligned if fullName changed,
       // and disable linked login account when employee is set to Inactive
       db.users.forEach((u) => {
-        if (u.employeeId === emp.id) {
+        if (u.employeeId === emp.id || (isSelfEmployee && u.id === actor.userId)) {
+          if (isSelfEmployee && !u.employeeId) {
+            u.employeeId = emp.id;
+          }
           if (body.fullName !== undefined) {
             u.name = emp.fullName;
           }
@@ -1724,11 +1871,13 @@ export function createApiRouter() {
 
       appendAuditLog(
         db,
-        req.sessionUser!,
-        'EMPLOYEE_UPDATED',
+        actor,
+        isSelfEmployee ? 'EMPLOYEE_SELF_PROFILE_UPDATED' : 'EMPLOYEE_UPDATED',
         'Employee',
         emp.id,
-        `Updated profile/status for ${emp.fullName} (${resolveEmployeeStatus(emp)}).`
+        isSelfEmployee
+          ? `Employee ${emp.fullName} updated their personal profile.`
+          : `Updated profile/status for ${emp.fullName} (${resolveEmployeeStatus(emp)}).`
       );
       writeDb(db);
       res.json({ employee: { ...emp, status: resolveEmployeeStatus(emp) }, driveWarning });

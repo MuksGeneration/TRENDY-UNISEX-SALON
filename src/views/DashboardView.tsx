@@ -283,17 +283,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
               </p>
             </div>
           </div>
-          <button
-            onClick={() => onNavigate('commissions')}
-            className="px-4 py-2 rounded-lg bg-[#E83B84] text-white text-xs font-semibold hover:bg-[#d12d73] cursor-pointer whitespace-nowrap"
-          >
-            View My Commission Ledger
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => onNavigate('employees')}
+              className="px-4 py-2 rounded-lg bg-[#1D1717] text-white text-xs font-semibold hover:bg-[#1D1717]/85 cursor-pointer whitespace-nowrap"
+            >
+              {data.employee ? 'My Profile' : 'Fill My Profile'}
+            </button>
+            <button
+              onClick={() => onNavigate('commissions')}
+              className="px-4 py-2 rounded-lg bg-[#E83B84] text-white text-xs font-semibold hover:bg-[#d12d73] cursor-pointer whitespace-nowrap"
+            >
+              View My Commission Ledger
+            </button>
+          </div>
         </div>
 
         {!data.employee && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
-            <strong>Profile Not Yet Linked:</strong> Your login account is active, but it is not linked to an employee stylist record yet. Ask the salon Owner or Manager to add your employee profile and link it to your account so your commissions and shifts appear here.
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-900">
+            <div>
+              <strong>Complete Your Profile:</strong> Your login account is active, and you can now fill in your personal stylist profile (photo, National ID, contacts, and next of kin).
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('employees')}
+              className="px-3.5 py-2 rounded-xl bg-[#E83B84] text-white font-semibold hover:bg-[#d12d73] cursor-pointer shrink-0 self-start sm:self-auto"
+            >
+              Fill My Profile
+            </button>
           </div>
         )}
 
