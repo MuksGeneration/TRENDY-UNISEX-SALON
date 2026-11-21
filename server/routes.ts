@@ -3713,18 +3713,25 @@ export function createApiRouter() {
     requireRole(['owner', 'manager']),
     (_req, res) => {
       const db = readDb();
+      const resolvedBridge = resolveBridge(db) || '';
+      const resolvedSheetId =
+        db.settings.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim() || '';
+      const resolvedDriveId =
+        db.settings.googleDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() || '';
       const serverCreds = getServerGoogleCredentialsStatus(db.settings.googleAppsScriptUrl);
       res.json({
         platform: process.env.VERCEL ? 'vercel' : IS_SERVERLESS ? 'serverless' : 'node',
         serverCredentialsConfigured: serverCreds.configured,
         serverCredentialMode: serverCreds.mode,
-        appsScriptConfigured: Boolean(resolveBridge(db)),
-        appsScriptUrl: db.settings.googleAppsScriptUrl || '',
+        appsScriptConfigured: Boolean(resolvedBridge),
+        appsScriptUrl: resolvedBridge,
         envSpreadsheetConfigured: Boolean(process.env.GOOGLE_SPREADSHEET_ID?.trim()),
         envDriveFolderConfigured: Boolean(process.env.GOOGLE_DRIVE_FOLDER_ID?.trim()),
-        linkedSpreadsheetId: db.settings.googleSpreadsheetId || '',
-        linkedSpreadsheetUrl: db.settings.googleSpreadsheetUrl || '',
-        linkedDriveFolderId: db.settings.googleDriveFolderId || '',
+        linkedSpreadsheetId: resolvedSheetId,
+        linkedSpreadsheetUrl:
+          db.settings.googleSpreadsheetUrl ||
+          (resolvedSheetId ? `https://docs.google.com/spreadsheets/d/${resolvedSheetId}/edit` : ''),
+        linkedDriveFolderId: resolvedDriveId,
         lastSheetsSyncAt: db.settings.lastSheetsSyncAt || '',
       });
     }

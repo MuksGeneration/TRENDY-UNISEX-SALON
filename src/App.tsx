@@ -51,6 +51,8 @@ export default function App() {
   });
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [googleConnected, setGoogleConnected] = useState(false);
+  const [cloudWorkspaceConnected, setCloudWorkspaceConnected] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState('');
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [branding, setBranding] = useState<SalonBranding>(DEFAULT_BRANDING);
   const [posPrefill, setPosPrefill] = useState<{
@@ -71,6 +73,18 @@ export default function App() {
     }
   };
 
+  const refreshWorkspaceHealth = async () => {
+    try {
+      const health = await apiFetch<{
+        sheetsDatabaseLinked?: boolean;
+        driveStorageLinked?: boolean;
+      }>('/api/health');
+      setCloudWorkspaceConnected(Boolean(health.sheetsDatabaseLinked || health.driveStorageLinked));
+    } catch {
+      // Ignore health check failures
+    }
+  };
+
   const refreshNotifications = async () => {
     try {
       const res = await apiFetch<{ notifications: Array<{ read: boolean }> }>('/api/notifications');
@@ -87,6 +101,7 @@ export default function App() {
     );
     (async () => {
       void refreshBranding();
+      void refreshWorkspaceHealth();
       try {
         const res = await apiFetch<{ user: SessionUser }>('/api/auth/me');
         setUser(res.user);
@@ -102,11 +117,29 @@ export default function App() {
   }, []);
 
   const handleConnectGoogle = async () => {
+    setWorkspaceError('');
     try {
       await connectGoogleWorkspace();
       setGoogleConnected(true);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Could not connect Google Workspace. Try using the Apps Script Bridge in Settings → Google Workspace.';
+      setWorkspaceError(message);
+      throw err;
+    }
+  };
+
+  const handleHeaderWorkspaceAction = async () => {
+    if (cloudWorkspaceConnected && user && ['owner', 'manager'].includes(user.role)) {
+      setActiveSection('settings');
+      return;
+    }
+    try {
+      await handleConnectGoogle();
     } catch {
-      // Popup closed or cancelled
+      // Error already surfaced via workspaceError banner
     }
   };
 
@@ -120,6 +153,7 @@ export default function App() {
     setSalonSessionToken(null);
     setUser(null);
     setGoogleConnected(false);
+    setWorkspaceError('');
     setActiveSection('dashboard');
   };
 
@@ -159,11 +193,14 @@ export default function App() {
           setUser(loggedInUser);
           if (isGoogle) setGoogleConnected(true);
           setActiveSection('dashboard');
+          void refreshWorkspaceHealth();
           void refreshNotifications();
         }}
       />
     );
   }
+
+  const effectiveWorkspaceConnected = googleConnected || cloudWorkspaceConnected;
 
   return (
     <SidebarLayout
@@ -172,10 +209,24 @@ export default function App() {
       activeSection={activeSection}
       onSelectSection={setActiveSection}
       unreadNotifications={unreadNotifications}
-      googleConnected={googleConnected}
-      onConnectGoogle={handleConnectGoogle}
+      googleConnected={effectiveWorkspaceConnected}
+      onConnectGoogle={() => void handleHeaderWorkspaceAction()}
       onLogout={handleLogout}
     >
+      {workspaceError && (
+        <div className="mb-4 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start justify-between gap-3">
+          <div className="leading-relaxed">
+            <strong>Google Workspace Notice:</strong> {workspaceError}
+          </div>
+          <button
+            type="button"
+            onClick={() => setWorkspaceError('')}
+            className="px-2 py-0.5 rounded border border-amber-300 bg-white hover:bg-amber-100 font-semibold shrink-0 cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {activeSection === 'dashboard' && (
         <DashboardView user={user} onNavigate={setActiveSection} />
       )}
@@ -204,8 +255,8 @@ export default function App() {
         <EmployeesSchedulingView
           mode={activeSection}
           user={user}
-          googleConnected={googleConnected}
-          onConnectGoogle={handleConnectGoogle}
+          googleConnected={effectiveWorkspaceConnected}
+          onConnectGoogle={handleHeaderWorkspaceAction}
         />
       )}
       {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
@@ -231,6 +282,7 @@ export default function App() {
           onConnectGoogle={handleConnectGoogle}
           onRefreshNotifications={() => void refreshNotifications()}
           onBrandingUpdated={() => void refreshBranding()}
+          onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
         />
       )}
     </SidebarLayout>

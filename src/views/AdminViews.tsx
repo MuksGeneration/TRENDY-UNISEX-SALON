@@ -131,6 +131,7 @@ interface AdminViewsProps {
   onConnectGoogle: () => Promise<void>;
   onRefreshNotifications: () => void;
   onBrandingUpdated?: () => void;
+  onWorkspaceUpdated?: () => void;
 }
 
 export const AdminViews: React.FC<AdminViewsProps> = ({
@@ -140,6 +141,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   onConnectGoogle,
   onRefreshNotifications,
   onBrandingUpdated,
+  onWorkspaceUpdated,
 }) => {
   const isOwner = user.role === 'owner';
   const isManager = user.role === 'manager';
@@ -344,6 +346,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
           setDriveFiles(drvRes.driveFiles);
         }
         setEmployees(empRes.employees);
+        onWorkspaceUpdated?.();
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load view data.');
@@ -1536,9 +1539,27 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                         : 'Use the Apps Script Web App Bridge below (no Google Service Account needed) or connect Google Workspace OAuth to persist your database in Google Sheets and files in Google Drive.'}
                     </p>
                   </div>
-                  {!googleConnected && (
+                  {canAccessCloudWorkspace ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold whitespace-nowrap">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        {googleConnected ? 'Google OAuth & Sheets Connected' : 'Google Sheets & Drive Connected'}
+                      </span>
+                    </div>
+                  ) : (
                     <button
-                      onClick={() => void onConnectGoogle()}
+                      onClick={async () => {
+                        setError('');
+                        try {
+                          await onConnectGoogle();
+                        } catch (err) {
+                          setError(
+                            err instanceof Error
+                              ? err.message
+                              : 'Could not connect Google Workspace.'
+                          );
+                        }
+                      }}
                       className="px-4 py-2 rounded-xl bg-[#E83B84] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
                     >
                       Connect Google Workspace
