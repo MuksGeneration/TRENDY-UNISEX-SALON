@@ -27,6 +27,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { ChangePasswordModal } from './ChangePasswordModal';
+import { PWAInstallButton } from './PWAInstallButton';
 import type { NavSection, SalonBranding, SessionUser, UserRole } from '../types';
 
 interface NavItemConfig {
@@ -164,6 +165,9 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
           {user.role} &middot; {user.email}
         </div>
         <div className="mt-3 space-y-2">
+          <div className="sm:hidden">
+            <PWAInstallButton variant="sidebar" />
+          </div>
           <button
             type="button"
             onClick={() => {
@@ -251,8 +255,11 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
             </div>
           </div>
 
-          {/* Zone 2: Google Workspace & Notification trigger */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 2: Install App, Google Workspace & Notification trigger */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div className="hidden sm:block">
+              <PWAInstallButton variant="header" />
+            </div>
             <button
               onClick={onConnectGoogle}
               className={`hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${

@@ -18,6 +18,7 @@ import {
   FileSpreadsheet,
   FileText,
   Eye,
+  EyeOff,
   Cloud,
   ExternalLink,
   FileClock,
@@ -30,8 +31,10 @@ import {
   fetchDriveMediaBlobUrl,
   formatUGX,
 } from '../lib/api';
+import { evaluatePasswordStrength } from '../lib/passwordPolicy';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
+import { PasswordStrengthMeter } from '../components/PasswordStrengthMeter';
 import type { CommissionLedgerEntry, EmployeeRecord, EmployeeStatus, SessionUser } from '../types';
 
 interface EmployeesSchedulingViewProps {
@@ -244,6 +247,11 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   const [savingEmp, setSavingEmp] = useState(false);
   const [modalError, setModalError] = useState('');
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [updatePasswordInProfile, setUpdatePasswordInProfile] = useState(false);
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState('');
+  const [profileNewPassword, setProfileNewPassword] = useState('');
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState('');
+  const [showProfilePass, setShowProfilePass] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadingIdSide, setUploadingIdSide] = useState<'front' | 'back' | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -360,6 +368,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedBy(undefined);
     setError('');
     setModalError('');
+    setUpdatePasswordInProfile(false);
+    setProfileCurrentPassword('');
+    setProfileNewPassword('');
+    setProfileConfirmPassword('');
     setShowEmpModal(true);
   };
 
@@ -392,6 +404,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedBy(undefined);
     setError('');
     setModalError('');
+    setUpdatePasswordInProfile(false);
+    setProfileCurrentPassword('');
+    setProfileNewPassword('');
+    setProfileConfirmPassword('');
     setShowEmpModal(true);
   };
 
@@ -420,6 +436,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedBy(emp.lastDocumentUpdatedBy);
     setError('');
     setModalError('');
+    setUpdatePasswordInProfile(false);
+    setProfileCurrentPassword('');
+    setProfileNewPassword('');
+    setProfileConfirmPassword('');
     setShowEmpModal(true);
   };
 
@@ -524,8 +544,45 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
       return;
     }
 
+    const wantsPasswordUpdate =
+      isEmployeeSelf &&
+      (updatePasswordInProfile ||
+        Boolean(profileCurrentPassword || profileNewPassword || profileConfirmPassword));
+
+    if (wantsPasswordUpdate) {
+      if (!profileCurrentPassword) {
+        setModalError('Please enter your current password to update your account password.');
+        return;
+      }
+      const pwStrength = evaluatePasswordStrength(profileNewPassword);
+      if (!pwStrength.isValid) {
+        setModalError(
+          pwStrength.errorMessage || 'New password must meet all password strength requirements.'
+        );
+        return;
+      }
+      if (profileNewPassword !== profileConfirmPassword) {
+        setModalError('New password and confirmation password do not match.');
+        return;
+      }
+      if (profileCurrentPassword === profileNewPassword) {
+        setModalError('New password must be different from your current password.');
+        return;
+      }
+    }
+
     setSavingEmp(true);
     try {
+      if (wantsPasswordUpdate) {
+        await apiFetch('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({
+            currentPassword: profileCurrentPassword,
+            newPassword: profileNewPassword,
+          }),
+        });
+      }
+
       let saveRes: { employee: EmployeeRecord; driveWarning?: string };
       if (editingEmpId) {
         saveRes = await apiFetch<{ employee: EmployeeRecord; driveWarning?: string }>(
@@ -536,11 +593,13 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
           }
         );
         setMsg(
-          saveRes.driveWarning
-            ? `Updated profile for ${empName.trim()}.`
-            : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-              ? `Updated profile for ${empName.trim()} and synced media to Google Drive.`
-              : `Updated profile for ${empName.trim()}.`
+          wantsPasswordUpdate
+            ? `Updated profile and account password for ${empName.trim()}.`
+            : saveRes.driveWarning
+              ? `Updated profile for ${empName.trim()}.`
+              : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
+                ? `Updated profile for ${empName.trim()} and synced media to Google Drive.`
+                : `Updated profile for ${empName.trim()}.`
         );
       } else {
         const endpoint = isEmployeeSelf ? '/api/employees/me' : '/api/employees';
@@ -550,7 +609,9 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         });
         setMsg(
           isEmployeeSelf
-            ? 'Your employee profile has been saved.'
+            ? wantsPasswordUpdate
+              ? 'Your employee profile and new password have been saved.'
+              : 'Your employee profile has been saved.'
             : saveRes.driveWarning
               ? `Registered new employee: ${empName.trim()}.`
               : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
@@ -563,6 +624,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
       }
       setShowEmpModal(false);
       setModalError('');
+      setUpdatePasswordInProfile(false);
+      setProfileCurrentPassword('');
+      setProfileNewPassword('');
+      setProfileConfirmPassword('');
       onProfileSaved?.();
       await load();
     } catch (err) {
@@ -1936,6 +2001,94 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   </span>
                 </div>
               )}
+
+              {isEmployeeSelf && (
+                <div className="sm:col-span-2 rounded-2xl border border-[#1D1717]/15 bg-[#F8EEEB]/60 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-[#1D1717] flex items-center gap-1.5">
+                        <KeyRound className="w-3.5 h-3.5 text-[#E83B84]" />
+                        Account Security &amp; Password Update
+                      </div>
+                      <p className="text-[11px] text-[#1D1717]/60">
+                        Optionally update your sign-in password while saving your profile.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUpdatePasswordInProfile((prev) => {
+                          const next = !prev;
+                          if (!next) {
+                            setProfileCurrentPassword('');
+                            setProfileNewPassword('');
+                            setProfileConfirmPassword('');
+                          }
+                          return next;
+                        });
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                        updatePasswordInProfile
+                          ? 'bg-[#1D1717] text-white border-[#1D1717]'
+                          : 'bg-white text-[#1D1717] border-[#1D1717]/15 hover:bg-[#F3BFD3]/40'
+                      }`}
+                    >
+                      {updatePasswordInProfile ? 'Cancel Password Change' : 'Update Password'}
+                    </button>
+                  </div>
+
+                  {updatePasswordInProfile && (
+                    <div className="space-y-3 pt-1">
+                      <div>
+                        <label className="block font-semibold mb-1">Current Password *</label>
+                        <div className="relative">
+                          <input
+                            type={showProfilePass ? 'text' : 'password'}
+                            value={profileCurrentPassword}
+                            onChange={(e) => setProfileCurrentPassword(e.target.value)}
+                            placeholder="Enter your current password"
+                            className="w-full px-3 py-2 pr-9 rounded-xl border border-[#1D1717]/15 bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowProfilePass((v) => !v)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#1D1717]/45 hover:text-[#1D1717] cursor-pointer"
+                            aria-label="Toggle password visibility"
+                          >
+                            {showProfilePass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold mb-1">New Password *</label>
+                          <input
+                            type={showProfilePass ? 'text' : 'password'}
+                            value={profileNewPassword}
+                            onChange={(e) => setProfileNewPassword(e.target.value)}
+                            placeholder="Min 8 chars, mixed case, number & symbol"
+                            className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Confirm New Password *</label>
+                          <input
+                            type={showProfilePass ? 'text' : 'password'}
+                            value={profileConfirmPassword}
+                            onChange={(e) => setProfileConfirmPassword(e.target.value)}
+                            placeholder="Re-enter new password"
+                            className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
+                          />
+                        </div>
+                      </div>
+                      <PasswordStrengthMeter
+                        password={profileNewPassword}
+                        confirmPassword={profileConfirmPassword}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {modalError && (
@@ -2281,16 +2434,30 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   Shift: <span className="font-mono font-semibold">{profileEmp.defaultShiftStart}–{profileEmp.defaultShiftEnd}</span> ({profileEmp.workingDays.join(', ')})
                 </div>
                 {(canManage || isEmployeeSelf) && (
-                  <button
-                    onClick={() => {
-                      const target = profileEmp;
-                      setProfileEmp(null);
-                      openEditEmployeeModal(target);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer"
-                  >
-                    <Pencil className="w-3.5 h-3.5" /> {isEmployeeSelf && !canManage ? 'Edit My Profile' : 'Edit Details'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isEmployeeSelf && !canManage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProfileEmp(null);
+                          setShowChangePassword(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] text-[#1D1717] font-semibold cursor-pointer"
+                      >
+                        <KeyRound className="w-3.5 h-3.5 text-[#E83B84]" /> Change Password
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        const target = profileEmp;
+                        setProfileEmp(null);
+                        openEditEmployeeModal(target);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer"
+                    >
+                      <Pencil className="w-3.5 h-3.5" /> {isEmployeeSelf && !canManage ? 'Edit My Profile' : 'Edit Details'}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

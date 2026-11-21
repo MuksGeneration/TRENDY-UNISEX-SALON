@@ -24,6 +24,7 @@ import {
   verifySessionToken,
   type AuthenticatedRequest,
 } from './auth.ts';
+import { validatePasswordPolicy } from './passwordPolicy.ts';
 import {
   getEmployeeCommissionSummary,
   getPolicyForDate,
@@ -467,12 +468,9 @@ export function createApiRouter() {
       res.status(400).json({ error: 'Current password and new password are required.' });
       return;
     }
-    if (newPassword.length < 6) {
-      res.status(400).json({ error: 'New password must be at least 6 characters long.' });
-      return;
-    }
-    if (newPassword.length > 128) {
-      res.status(400).json({ error: 'New password is too long (maximum 128 characters).' });
+    const policy = validatePasswordPolicy(newPassword);
+    if (!policy.isValid) {
+      res.status(400).json({ error: policy.errorMessage || 'New password does not meet security requirements.' });
       return;
     }
     if (currentPassword === newPassword) {
@@ -5318,8 +5316,13 @@ export function createApiRouter() {
       employeeId?: string;
       password: string;
     };
-    if (!name?.trim() || !email?.trim() || !password || password.length < 6) {
-      res.status(400).json({ error: 'Name, email, and password (min 6 chars) are required.' });
+    if (!name?.trim() || !email?.trim() || !password) {
+      res.status(400).json({ error: 'Name, email, and password are required.' });
+      return;
+    }
+    const pwPolicy = validatePasswordPolicy(password);
+    if (!pwPolicy.isValid) {
+      res.status(400).json({ error: pwPolicy.errorMessage || 'Password does not meet security requirements.' });
       return;
     }
     if (db.users.some((u) => u.email.toLowerCase() === email.trim().toLowerCase())) {
@@ -5440,7 +5443,12 @@ export function createApiRouter() {
       if (typeof body.active === 'boolean') target.active = body.active;
       if (body.role) target.role = body.role;
       if (body.name) target.name = body.name;
-      if (body.password && String(body.password).length >= 6) {
+      if (body.password !== undefined && String(body.password).length > 0) {
+        const pwPolicy = validatePasswordPolicy(String(body.password));
+        if (!pwPolicy.isValid) {
+          res.status(400).json({ error: pwPolicy.errorMessage || 'Password does not meet security requirements.' });
+          return;
+        }
         target.passwordHash = hashPassword(String(body.password));
       }
       appendAuditLog(

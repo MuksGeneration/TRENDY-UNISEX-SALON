@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { CheckCircle2, Eye, EyeOff, KeyRound, X } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { evaluatePasswordStrength } from '../lib/passwordPolicy';
+import { PasswordStrengthMeter } from './PasswordStrengthMeter';
 
 interface ChangePasswordModalProps {
   open: boolean;
@@ -24,6 +26,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   if (!open) return null;
 
+  const strength = evaluatePasswordStrength(newPassword);
+
   const handleClose = () => {
     setCurrentPassword('');
     setNewPassword('');
@@ -38,8 +42,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     setError('');
     setSuccessMsg('');
 
-    if (newPassword.length < 6) {
-      setError('New password must be at least 6 characters long.');
+    if (!strength.isValid) {
+      setError(strength.errorMessage || 'Please create a stronger password meeting all requirements.');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -70,12 +74,12 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-[#1D1717]/55 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-[#1D1717]/55 flex items-center justify-center p-4 overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-label="Change account password"
     >
-      <div className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 shadow-2xl overflow-hidden my-6">
         <div className="px-6 py-4 border-b border-[#1D1717]/10 bg-[#F8EEEB]/60 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-[#1D1717] text-[#F3BFD3] flex items-center justify-center">
@@ -133,16 +137,16 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
           <div>
             <label className="block font-semibold text-[#1D1717] mb-1">
-              New Password * <span className="font-normal text-[#1D1717]/55">(min 6 chars)</span>
+              New Password * <span className="font-normal text-[#1D1717]/55">(min 8 chars)</span>
             </label>
             <div className="relative">
               <input
                 type={showNew ? 'text' : 'password'}
                 required
-                minLength={6}
+                minLength={8}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Enter new password"
+                placeholder="Create a strong password"
                 className="w-full px-3 py-2.5 pr-9 rounded-xl border border-[#1D1717]/15 focus:outline-none focus:border-[#E83B84]"
               />
               <button
@@ -156,12 +160,14 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
             </div>
           </div>
 
+          <PasswordStrengthMeter password={newPassword} confirmPassword={confirmPassword} />
+
           <div>
             <label className="block font-semibold text-[#1D1717] mb-1">Confirm New Password *</label>
             <input
               type={showNew ? 'text' : 'password'}
               required
-              minLength={6}
+              minLength={8}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Re-enter new password"

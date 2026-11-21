@@ -12,6 +12,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  EyeOff,
   FileSpreadsheet,
   FileText,
   FolderOpen,
@@ -31,7 +32,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiFetch, fetchDriveMediaBlobUrl } from '../lib/api';
+import { evaluatePasswordStrength } from '../lib/passwordPolicy';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { PasswordStrengthMeter } from '../components/PasswordStrengthMeter';
 import type {
   DriveDocumentCategory,
   DriveDocumentRecord,
@@ -167,6 +170,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [uRole, setURole] = useState<UserRole>('employee');
   const [uEmpId, setUEmpId] = useState('');
   const [uPass, setUPass] = useState('');
+  const [showUPass, setShowUPass] = useState(false);
+  const [userModalError, setUserModalError] = useState('');
 
   // Audit logs & User Session History
   const [logs, setLogs] = useState<
@@ -469,6 +474,12 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setUserModalError('');
+    const pwCheck = evaluatePasswordStrength(uPass);
+    if (!pwCheck.isValid) {
+      setUserModalError(pwCheck.errorMessage || 'Please enter a stronger password.');
+      return;
+    }
     try {
       await apiFetch('/api/users', {
         method: 'POST',
@@ -484,10 +495,11 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
       setUName('');
       setUEmail('');
       setUPass('');
+      setUserModalError('');
       setMsg('User account created.');
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create user.');
+      setUserModalError(err instanceof Error ? err.message : 'Failed to create user.');
     }
   };
 
@@ -853,12 +865,17 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
             </table>
           </div>
           {isOwner && showUserModal && (
-            <div className="fixed inset-0 z-50 bg-[#1D1717]/45 flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-50 bg-[#1D1717]/45 flex items-center justify-center p-4 overflow-y-auto">
               <form
                 onSubmit={handleCreateUser}
-                className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 p-6 space-y-3 text-xs"
+                className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 p-6 space-y-3 text-xs my-6"
               >
                 <h3 className="text-base font-bold">Create Salon User Account</h3>
+                {userModalError && (
+                  <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
+                    {userModalError}
+                  </div>
+                )}
                 <input
                   required
                   value={uName}
@@ -897,19 +914,33 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     ))}
                   </select>
                 )}
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={uPass}
-                  onChange={(e) => setUPass(e.target.value)}
-                  placeholder="Password (min 6 chars) *"
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
-                />
+                <div className="relative">
+                  <input
+                    type={showUPass ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    value={uPass}
+                    onChange={(e) => setUPass(e.target.value)}
+                    placeholder="Password (min 8 chars, mixed case, number & symbol) *"
+                    className="w-full px-3 py-2 pr-9 rounded-xl border border-[#1D1717]/15"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowUPass((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#1D1717]/45 hover:text-[#1D1717] cursor-pointer"
+                    aria-label="Toggle user password visibility"
+                  >
+                    {showUPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <PasswordStrengthMeter password={uPass} />
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={() => setShowUserModal(false)}
+                    onClick={() => {
+                      setUserModalError('');
+                      setShowUserModal(false);
+                    }}
                     className="px-4 py-2 rounded-xl border border-[#1D1717]/15 font-semibold cursor-pointer"
                   >
                     Cancel

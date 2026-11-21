@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1D1717" />
+      <stop offset="100%" stop-color="#2E2326" />
+    </linearGradient>
+    <linearGradient id="pinkGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F15898" />
+      <stop offset="100%" stop-color="#E83B84" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <circle cx="256" cy="256" r="176" fill="url(#pinkGrad)" />
+  <circle cx="256" cy="256" r="154" fill="none" stroke="#F8EEEB" stroke-opacity="0.28" stroke-width="4" />
+  <!-- Stylized Scissors Icon -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="196" cy="196" r="34" />
+    <circle cx="196" cy="316" r="34" />
+    <line x1="224" y1="216" x2="344" y2="322" />
+    <line x1="224" y1="296" x2="344" y2="190" />
+  </g>
+  <!-- Sparkle accent -->
+  <path d="M354 134 L362 152 L380 160 L362 168 L354 186 L346 168 L328 160 L346 152 Z" fill="#F3BFD3" />
+</svg>

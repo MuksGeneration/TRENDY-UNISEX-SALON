@@ -12,6 +12,7 @@ import {
 } from './lib/firebaseAuth';
 import { LoginView } from './components/LoginView';
 import { SidebarLayout } from './components/SidebarLayout';
+import { OfflineIndicator } from './components/PWAInstallButton';
 import { DashboardView } from './views/DashboardView';
 import { AppointmentsView } from './views/AppointmentsView';
 import { PosBillingView } from './views/PosBillingView';
@@ -247,17 +248,20 @@ export default function App() {
       );
     }
     return (
-      <LoginView
-        branding={branding}
-        onOpenClientBooking={() => setShowClientBooking(true)}
-        onSuccess={(loggedInUser, isGoogle) => {
-          setUser(loggedInUser);
-          if (isGoogle) setGoogleConnected(true);
-          setActiveSection('dashboard');
-          void refreshWorkspaceHealth();
-          void refreshNotifications();
-        }}
-      />
+      <>
+        <LoginView
+          branding={branding}
+          onOpenClientBooking={() => setShowClientBooking(true)}
+          onSuccess={(loggedInUser, isGoogle) => {
+            setUser(loggedInUser);
+            if (isGoogle) setGoogleConnected(true);
+            setActiveSection('dashboard');
+            void refreshWorkspaceHealth();
+            void refreshNotifications();
+          }}
+        />
+        <OfflineIndicator />
+      </>
     );
   }
 
@@ -352,6 +356,7 @@ export default function App() {
           />
         )}
       </AppErrorBoundary>
+      <OfflineIndicator />
     </SidebarLayout>
   );
 }

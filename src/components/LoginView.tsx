@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Eye, EyeOff, Lock, Mail, Scissors, Calendar } from 'lucide-react';
 import { apiFetch, setSalonSessionToken } from '../lib/api';
 import { connectGoogleWorkspace } from '../lib/firebaseAuth';
+import { PWAInstallButton } from './PWAInstallButton';
 import type { SalonBranding, SessionUser } from '../types';
 
 interface LoginViewProps {
@@ -168,20 +169,23 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpe
         )}
         <div className="relative z-10 w-full max-w-md bg-white/95 backdrop-blur-xs border border-[#1D1717]/10 rounded-2xl p-7 sm:p-9 shadow-sm">
           <div className="mb-7">
-            <div className="flex items-center justify-between gap-2 mb-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
               <span className="text-xs font-semibold tracking-wider text-[#E83B84] uppercase">
                 {salonName}
               </span>
-              {onOpenClientBooking && (
-                <button
-                  type="button"
-                  onClick={onOpenClientBooking}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 border border-[#E83B84]/25 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
-                >
-                  <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
-                  <span>Client Booking View</span>
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <PWAInstallButton variant="login" />
+                {onOpenClientBooking && (
+                  <button
+                    type="button"
+                    onClick={onOpenClientBooking}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 border border-[#E83B84]/25 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
+                    <span>Client Booking View</span>
+                  </button>
+                )}
+              </div>
             </div>
             <h2 className="text-2xl font-bold text-[#1D1717]">Staff &amp; Management Sign In</h2>
             <p className="text-sm text-[#1D1717]/65 mt-1">
