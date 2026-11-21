@@ -8,12 +8,28 @@ import {
   Upload,
   Sparkles,
   RefreshCw,
+  Receipt,
+  FileDown,
+  Printer,
+  X,
+  CheckCircle2,
 } from 'lucide-react';
-import { apiFetch, formatUGX } from '../lib/api';
-import type { NavSection, SessionUser } from '../types';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { apiFetch, downloadReceiptPdf, formatUGX } from '../lib/api';
+import type { NavSection, POSTransactionRecord, SalonBranding, SessionUser } from '../types';
 
 interface DashboardViewProps {
   user: SessionUser;
+  branding?: SalonBranding;
   onNavigate: (section: NavSection) => void;
 }
 
@@ -82,6 +98,15 @@ interface DashboardResponse {
     noShowAppointments: number;
   };
   charts?: {
+    weeklyRevenueTrend?: Array<{
+      date: string;
+      dayLabel: string;
+      serviceRevenue: number;
+      productRevenue: number;
+      totalRevenue: number;
+      expenses: number;
+      isToday: boolean;
+    }>;
     dailyTrend: Array<{ date: string; serviceSales: number; productSales: number; expenses: number }>;
     employeePerformance: Array<{
       employeeId: string;
@@ -128,9 +153,10 @@ interface DashboardResponse {
     startTime: string;
     status: string;
   }>;
+  recentTransactions?: POSTransactionRecord[];
 }
 
-export const DashboardView: React.FC<DashboardViewProps> = ({ user, onNavigate }) => {
+export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, onNavigate }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [startDate, setStartDate] = useState(`${today.slice(0, 7)}-01`);
   const [endDate, setEndDate] = useState(today);
@@ -138,6 +164,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onNavigate }
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
   const [error, setError] = useState('');
+  const [trendRange, setTrendRange] = useState<'week' | '14d'>('week');
+  const [selectedReceipt, setSelectedReceipt] = useState<POSTransactionRecord | null>(null);
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -286,10 +314,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onNavigate }
   const oo = data.operationalOverview!;
   const charts = data.charts!;
 
-  const maxTrendVal = Math.max(
-    1,
-    ...charts.dailyTrend.map((d) => Math.max(d.serviceSales + d.productSales, d.expenses))
-  );
+  const weekData = (charts.weeklyRevenueTrend || []).map((d) => ({
+    label: d.isToday ? `${d.dayLabel} (Today)` : `${d.dayLabel} ${d.date.slice(8)}`,
+    date: d.date,
+    dayLabel: d.dayLabel,
+    serviceRevenue: d.serviceRevenue,
+    productRevenue: d.productRevenue,
+    totalRevenue: d.totalRevenue,
+    expenses: d.expenses,
+    isToday: d.isToday,
+  }));
+
+  const fourteenDayData = charts.dailyTrend.map((d) => ({
+    label: d.date.slice(5),
+    date: d.date,
+    dayLabel: d.date.slice(5),
+    serviceRevenue: d.serviceSales,
+    productRevenue: d.productSales,
+    totalRevenue: d.serviceSales + d.productSales,
+    expenses: d.expenses,
+    isToday: d.date === data.today,
+  }));
+
+  const activeChartData = trendRange === 'week' && weekData.length > 0 ? weekData : fourteenDayData;
+  const activeRangeRevenue = activeChartData.reduce((sum, d) => sum + d.totalRevenue, 0);
+  const activeRangeExpenses = activeChartData.reduce((sum, d) => sum + d.expenses, 0);
 
   return (
     <div className="space-y-6">
@@ -490,59 +539,155 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onNavigate }
 
       {/* Section 3: Visual Analytics Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 14-Day Daily Sales & Expenses Chart */}
+        {/* Current-Week / 14-Day Recharts Revenue & Expense Bar Chart */}
         <div className="lg:col-span-2 bg-white border border-[#1D1717]/10 rounded-2xl p-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="text-base font-bold text-[#1D1717] flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-[#E83B84]" />
-                <span>14-Day Revenue &amp; Expense Trend</span>
+                <span>
+                  {trendRange === 'week'
+                    ? 'Current Week Daily Revenue Trend (Mon–Sun)'
+                    : '14-Day Revenue & Expense Trend'}
+                </span>
               </h3>
-              <p className="text-xs text-[#1D1717]/55">
-                Daily service revenue, retail sales, and recorded expenses (UGX)
+              <p className="text-xs text-[#1D1717]/55 mt-0.5">
+                {trendRange === 'week'
+                  ? `This week's revenue: ${formatUGX(activeRangeRevenue)} · Expenses: ${formatUGX(activeRangeExpenses)}`
+                  : `14-day revenue: ${formatUGX(activeRangeRevenue)} · Expenses: ${formatUGX(activeRangeExpenses)}`}
               </p>
             </div>
-            <div className="flex items-center gap-4 text-xs text-[#1D1717]/70">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-xs bg-[#E83B84]" /> Services
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-xs bg-[#F08BB4]" /> Retail
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-xs bg-[#1D1717]" /> Expenses
-              </span>
+            <div className="inline-flex items-center gap-1 bg-[#F8EEEB] p-1 rounded-xl border border-[#1D1717]/10 self-start sm:self-auto text-xs">
+              <button
+                type="button"
+                onClick={() => setTrendRange('week')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  trendRange === 'week'
+                    ? 'bg-[#E83B84] text-white'
+                    : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                }`}
+              >
+                This Week
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrendRange('14d')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer ${
+                  trendRange === '14d'
+                    ? 'bg-[#E83B84] text-white'
+                    : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                }`}
+              >
+                14 Days
+              </button>
             </div>
           </div>
 
-          <div className="h-56 flex items-end gap-2 pt-4">
-            {charts.dailyTrend.map((day) => {
-              const totalRev = day.serviceSales + day.productSales;
-              const srvH = Math.round((day.serviceSales / maxTrendVal) * 165);
-              const prdH = Math.round((day.productSales / maxTrendVal) * 165);
-              const expH = Math.round((day.expenses / maxTrendVal) * 165);
-              return (
-                <div
-                  key={day.date}
-                  className="flex-1 flex flex-col items-center group"
-                  title={`${day.date} — Services: ${formatUGX(day.serviceSales)}, Retail: ${formatUGX(day.productSales)}, Expenses: ${formatUGX(day.expenses)}`}
-                >
-                  <div className="w-full flex items-end justify-center gap-0.5 h-44">
-                    <div className="w-3 sm:w-4 flex flex-col justify-end rounded-t overflow-hidden bg-[#F8EEEB]">
-                      {prdH > 0 && <div style={{ height: prdH }} className="bg-[#F08BB4] w-full" />}
-                      {srvH > 0 && <div style={{ height: srvH }} className="bg-[#E83B84] w-full" />}
-                      {totalRev === 0 && <div className="h-[2px] bg-[#1D1717]/10 w-full" />}
-                    </div>
-                    {expH > 0 && (
-                      <div style={{ height: expH }} className="w-1.5 sm:w-2 bg-[#1D1717]/80 rounded-t" />
-                    )}
-                  </div>
-                  <span className="text-[10px] font-mono text-[#1D1717]/55 mt-2">
-                    {day.date.slice(5)}
-                  </span>
-                </div>
-              );
-            })}
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={activeChartData}
+                margin={{ top: 8, right: 8, left: 0, bottom: 4 }}
+                barGap={4}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  vertical={false}
+                  stroke="#1D1717"
+                  strokeOpacity={0.08}
+                />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.7 }}
+                  axisLine={{ stroke: '#1D1717', strokeOpacity: 0.12 }}
+                  tickLine={false}
+                  dy={6}
+                />
+                <YAxis
+                  tickFormatter={formatCompactUGX}
+                  tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.65, fontFamily: 'monospace' }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={54}
+                />
+                <Tooltip
+                  cursor={{ fill: '#F8EEEB', opacity: 0.7 }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    const pt = payload[0].payload as {
+                      date: string;
+                      dayLabel: string;
+                      serviceRevenue: number;
+                      productRevenue: number;
+                      totalRevenue: number;
+                      expenses: number;
+                      isToday: boolean;
+                    };
+                    return (
+                      <div className="bg-white border border-[#1D1717]/15 rounded-xl p-3.5 shadow-sm text-xs space-y-1.5 min-w-[205px]">
+                        <div className="font-bold text-[#1D1717] border-b border-[#1D1717]/10 pb-1 flex items-center justify-between gap-2">
+                          <span>{pt.dayLabel}</span>
+                          <span className="font-mono text-[11px] text-[#1D1717]/55">{pt.date}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-[#1D1717]/75">Service Revenue</span>
+                          <span className="font-mono tabular-nums font-semibold text-[#E83B84]">
+                            {formatUGX(pt.serviceRevenue)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-[#1D1717]/75">Retail Sales</span>
+                          <span className="font-mono tabular-nums font-semibold text-[#D65A8E]">
+                            {formatUGX(pt.productRevenue)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4 border-t border-[#1D1717]/10 pt-1">
+                          <span className="font-semibold text-[#1D1717]">Total Daily Revenue</span>
+                          <span className="font-mono tabular-nums font-bold text-[#1D1717]">
+                            {formatUGX(pt.totalRevenue)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-[#1D1717]/75">Expenses</span>
+                          <span className="font-mono tabular-nums font-semibold text-[#1D1717]/80">
+                            {formatUGX(pt.expenses)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }}
+                />
+                <Legend
+                  verticalAlign="top"
+                  align="right"
+                  iconType="square"
+                  wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }}
+                />
+                <Bar
+                  dataKey="serviceRevenue"
+                  name="Services (UGX)"
+                  stackId="revenue"
+                  fill="#E83B84"
+                  maxBarSize={36}
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="productRevenue"
+                  name="Retail (UGX)"
+                  stackId="revenue"
+                  fill="#F08BB4"
+                  maxBarSize={36}
+                  radius={[4, 4, 0, 0]}
+                />
+                <Bar
+                  dataKey="expenses"
+                  name="Expenses (UGX)"
+                  fill="#1D1717"
+                  maxBarSize={18}
+                  radius={[4, 4, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
@@ -742,9 +887,292 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onNavigate }
           )}
         </div>
       </div>
+
+      {/* Section 5: Recent Transactions (Last 5 Completed Sales) */}
+      <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-base font-bold text-[#1D1717] flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-[#E83B84]" />
+              Recent Transactions
+            </h3>
+            <p className="text-xs text-[#1D1717]/60 mt-0.5">
+              Last 5 completed POS sales with instant receipt details
+            </p>
+          </div>
+          <button
+            onClick={() => onNavigate('pos')}
+            className="text-xs font-semibold text-[#E83B84] hover:underline cursor-pointer self-start sm:self-auto"
+          >
+            Open POS &amp; Sales
+          </button>
+        </div>
+
+        {!data.recentTransactions || data.recentTransactions.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#1D1717]/15 bg-[#F8EEEB]/50 p-6 text-center">
+            <p className="text-xs font-medium text-[#1D1717]/65">
+              No completed POS transactions recorded yet. Completed sales will appear here for quick receipt lookup.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-[#1D1717]/10">
+            {data.recentTransactions.map((tx) => {
+              const itemSummary =
+                tx.items.length > 0
+                  ? tx.items.map((item) => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`).join(', ')
+                  : 'POS Sale';
+              const paymentLabel =
+                tx.payments.length > 0 ? tx.payments.map((p) => p.method).join(' + ') : 'Paid';
+
+              return (
+                <div
+                  key={tx.id}
+                  className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-bold text-[#1D1717]">
+                        {tx.reference}
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold">
+                        <CheckCircle2 className="w-3 h-3" />
+                        {tx.status}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-[#F8EEEB] text-[#1D1717]/75 text-[11px] font-medium">
+                        {paymentLabel}
+                      </span>
+                    </div>
+                    <div className="text-sm font-semibold text-[#1D1717] truncate">
+                      {tx.customerName}
+                    </div>
+                    <div className="text-xs text-[#1D1717]/60 truncate">
+                      {itemSummary} &middot; {tx.date} &middot; Cashier: {tx.cashierName}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+                    <div className="text-left sm:text-right font-mono tabular-nums">
+                      <div className="text-sm font-bold text-[#1D1717]">
+                        {formatUGX(tx.totalAmount)}
+                      </div>
+                      <div className="text-[11px] text-[#1D1717]/55">
+                        {tx.items.length} item{tx.items.length === 1 ? '' : 's'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReceipt(tx)}
+                        className="px-3 py-1.5 rounded-xl bg-[#1D1717] hover:bg-[#1D1717]/85 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Receipt className="w-3.5 h-3.5 text-[#F3BFD3]" />
+                        View Receipt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadReceiptPdf(tx, branding)}
+                        className="p-2 rounded-xl bg-[#F8EEEB] hover:bg-[#F3BFD3]/60 text-[#1D1717] cursor-pointer"
+                        aria-label={`Download PDF receipt ${tx.reference}`}
+                        title="Download PDF Receipt"
+                      >
+                        <FileDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Receipt Details Modal */}
+      {selectedReceipt && (
+        <div
+          className="fixed inset-0 z-50 bg-[#1D1717]/60 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Receipt details for ${selectedReceipt.reference}`}
+        >
+          <div className="bg-white border border-[#1D1717]/15 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="px-6 py-4 border-b border-[#1D1717]/10 flex items-center justify-between bg-[#F8EEEB]/60">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#1D1717] text-[#F3BFD3] flex items-center justify-center">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-[#1D1717]">
+                    {branding?.businessName || 'Trendy Unisex Salon'}
+                  </h4>
+                  <p className="text-[11px] font-mono text-[#1D1717]/60">
+                    Receipt {selectedReceipt.reference}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedReceipt(null)}
+                className="p-1.5 rounded-lg hover:bg-[#1D1717]/10 text-[#1D1717]/70 cursor-pointer"
+                aria-label="Close receipt modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-2 gap-3 text-xs bg-[#F8EEEB]/50 rounded-xl p-3.5 border border-[#1D1717]/10">
+                <div>
+                  <div className="text-[#1D1717]/55">Client</div>
+                  <div className="font-semibold text-[#1D1717] mt-0.5">
+                    {selectedReceipt.customerName}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[#1D1717]/55">Cashier</div>
+                  <div className="font-semibold text-[#1D1717] mt-0.5">
+                    {selectedReceipt.cashierName}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[#1D1717]/55">Date</div>
+                  <div className="font-mono font-medium text-[#1D1717] mt-0.5">
+                    {selectedReceipt.date}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[#1D1717]/55">Status</div>
+                  <div className="font-semibold text-emerald-700 mt-0.5">
+                    {selectedReceipt.status}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-[#1D1717]/55 mb-2">
+                  Line Items
+                </div>
+                <div className="divide-y divide-[#1D1717]/10 border border-[#1D1717]/10 rounded-xl overflow-hidden">
+                  {selectedReceipt.items.map((item, idx) => (
+                    <div key={item.id || `${item.refId}-${idx}`} className="px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-[#1D1717]">
+                          {item.name}
+                          {item.quantity > 1 ? ` ×${item.quantity}` : ''}
+                        </div>
+                        <div className="text-[#1D1717]/55 mt-0.5">
+                          {item.itemType}
+                          {item.employeeName ? ` · Stylist: ${item.employeeName}` : ''}
+                          {' · Unit: '}
+                          <span className="font-mono">{formatUGX(item.unitPrice)}</span>
+                        </div>
+                      </div>
+                      <div className="font-mono font-bold text-[#1D1717] tabular-nums shrink-0">
+                        {formatUGX(item.lineTotal)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5 text-xs border-t border-[#1D1717]/10 pt-3">
+                <div className="flex justify-between text-[#1D1717]/70">
+                  <span>Subtotal</span>
+                  <span className="font-mono tabular-nums">{formatUGX(selectedReceipt.subtotal)}</span>
+                </div>
+                {selectedReceipt.discountTotal > 0 && (
+                  <div className="flex justify-between text-[#E83B84]">
+                    <span>Discount</span>
+                    <span className="font-mono tabular-nums">-{formatUGX(selectedReceipt.discountTotal)}</span>
+                  </div>
+                )}
+                {selectedReceipt.taxAmount > 0 && (
+                  <div className="flex justify-between text-[#1D1717]/70">
+                    <span>Tax</span>
+                    <span className="font-mono tabular-nums">{formatUGX(selectedReceipt.taxAmount)}</span>
+                  </div>
+                )}
+                {selectedReceipt.tipAmount > 0 && (
+                  <div className="flex justify-between text-[#1D1717]/70">
+                    <span>Tip</span>
+                    <span className="font-mono tabular-nums">{formatUGX(selectedReceipt.tipAmount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm font-bold text-[#1D1717] pt-2 border-t border-[#1D1717]/10">
+                  <span>Total Paid</span>
+                  <span className="font-mono tabular-nums">{formatUGX(selectedReceipt.totalAmount)}</span>
+                </div>
+              </div>
+
+              {selectedReceipt.payments.length > 0 && (
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-[#1D1717]/55 mb-2">
+                    Payment Breakdown
+                  </div>
+                  <div className="space-y-1.5">
+                    {selectedReceipt.payments.map((payment) => (
+                      <div
+                        key={payment.id}
+                        className="flex items-center justify-between text-xs bg-[#F8EEEB]/40 rounded-lg px-3 py-2 border border-[#1D1717]/10"
+                      >
+                        <span className="font-medium text-[#1D1717]">
+                          {payment.method}
+                          {payment.reference ? ` (${payment.reference})` : ''}
+                        </span>
+                        <span className="font-mono font-semibold text-[#1D1717] tabular-nums">
+                          {formatUGX(payment.amount)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedReceipt.notes && (
+                <div className="text-xs text-[#1D1717]/70 bg-[#F8EEEB]/40 rounded-xl p-3 border border-[#1D1717]/10">
+                  <span className="font-semibold text-[#1D1717]">Notes: </span>
+                  {selectedReceipt.notes}
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#1D1717]/10 bg-[#F8EEEB]/40 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-3.5 py-2 rounded-xl bg-white border border-[#1D1717]/15 hover:bg-[#F8EEEB] text-xs font-semibold text-[#1D1717] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                Print Receipt
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadReceiptPdf(selectedReceipt, branding)}
+                className="px-3.5 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d32f75] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                Download PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedReceipt(null)}
+                className="px-3.5 py-2 rounded-xl bg-[#1D1717] hover:bg-[#1D1717]/85 text-white text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
+function formatCompactUGX(val: number): string {
+  const abs = Math.abs(val);
+  if (abs >= 1_000_000) return `${(val / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (abs >= 1_000) return `${Math.round(val / 1_000)}K`;
+  return String(Math.round(val));
+}
 
 const MetricCard: React.FC<{
   label: string;

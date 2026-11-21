@@ -228,7 +228,7 @@ export default function App() {
         </div>
       )}
       {activeSection === 'dashboard' && (
-        <DashboardView user={user} onNavigate={setActiveSection} />
+        <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
       )}
       {activeSection === 'appointments' && (
         <AppointmentsView

@@ -504,11 +504,47 @@ export function createApiRouter() {
     const todaySalonShare = todayLedger.reduce((s, c) => s + c.salonShare, 0);
     const periodSalonShare = periodLedger.reduce((s, c) => s + c.salonShare, 0);
 
+    // Build current-week (Monday -> Sunday) daily revenue trend from local DB state
+    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const todayAnchor = new Date(`${today}T00:00:00Z`);
+    const offsetFromMonday = (todayAnchor.getUTCDay() + 6) % 7;
+    const weekStart = new Date(todayAnchor);
+    weekStart.setUTCDate(todayAnchor.getUTCDate() - offsetFromMonday);
+
+    const weeklyRevenueTrend: Array<{
+      date: string;
+      dayLabel: string;
+      serviceRevenue: number;
+      productRevenue: number;
+      totalRevenue: number;
+      expenses: number;
+      isToday: boolean;
+    }> = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setUTCDate(weekStart.getUTCDate() + i);
+      const iso = d.toISOString().slice(0, 10);
+      const dayTxs = activeTx.filter((t) => t.date === iso);
+      const dayBreakdown = calcBreakdown(dayTxs);
+      const dayExp = db.expenses
+        .filter((e) => e.date === iso && e.status !== 'Rejected')
+        .reduce((s, e) => s + e.amount, 0);
+      weeklyRevenueTrend.push({
+        date: iso,
+        dayLabel: DAY_NAMES[d.getUTCDay()],
+        serviceRevenue: dayBreakdown.serviceRevenue,
+        productRevenue: dayBreakdown.productRevenue,
+        totalRevenue: dayBreakdown.totalSales,
+        expenses: dayExp,
+        isToday: iso === today,
+      });
+    }
+
     // Build 14-day daily sales trend
     const dailyTrend: Array<{ date: string; serviceSales: number; productSales: number; expenses: number }> = [];
     for (let i = 13; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
+      const d = new Date(todayAnchor);
+      d.setUTCDate(todayAnchor.getUTCDate() - i);
       const iso = d.toISOString().slice(0, 10);
       const dayTxs = activeTx.filter((t) => t.date === iso);
       const dayBreakdown = calcBreakdown(dayTxs);
@@ -587,6 +623,10 @@ export function createApiRouter() {
 
     const totalCustomers = db.customers.length;
     const returningCustomers = db.customers.filter((c) => c.totalVisits >= 2).length;
+    const recentTransactions = [...db.posTransactions]
+      .filter((t) => t.status === 'Completed')
+      .sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date))
+      .slice(0, 5);
 
     res.json({
       roleScope: user.role,
@@ -636,6 +676,7 @@ export function createApiRouter() {
         ).length,
       },
       charts: {
+        weeklyRevenueTrend,
         dailyTrend,
         employeePerformance,
         popularServices: Object.entries(servicePopularityMap)
@@ -647,6 +688,7 @@ export function createApiRouter() {
           amount,
         })),
       },
+      recentTransactions,
       hasTransactions: db.posTransactions.length > 0,
     });
   });
