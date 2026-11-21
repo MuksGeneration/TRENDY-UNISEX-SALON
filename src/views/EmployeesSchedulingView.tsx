@@ -21,6 +21,7 @@ import {
   Cloud,
   ExternalLink,
   FileClock,
+  KeyRound,
 } from 'lucide-react';
 import {
   apiFetch,
@@ -30,6 +31,7 @@ import {
   formatUGX,
 } from '../lib/api';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { ChangePasswordModal } from '../components/ChangePasswordModal';
 import type { CommissionLedgerEntry, EmployeeRecord, EmployeeStatus, SessionUser } from '../types';
 
 interface EmployeesSchedulingViewProps {
@@ -37,6 +39,7 @@ interface EmployeesSchedulingViewProps {
   user: SessionUser;
   googleConnected?: boolean;
   onConnectGoogle?: () => Promise<void>;
+  onProfileSaved?: () => void;
 }
 
 const ALL_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -134,8 +137,8 @@ async function readNationalIdFileToDataUrl(file: File): Promise<string> {
     throw new Error('Please upload a National ID photo (PNG, JPG, WebP) or PDF document.');
   }
   if (isPdf) {
-    if (file.size > 2.5 * 1024 * 1024) {
-      throw new Error('PDF file is too large (maximum 2.5 MB).');
+    if (file.size > 1.5 * 1024 * 1024) {
+      throw new Error('PDF file is too large (maximum 1.5 MB).');
     }
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -155,7 +158,7 @@ async function readNationalIdFileToDataUrl(file: File): Promise<string> {
       const img = new Image();
       img.onerror = () => reject(new Error('Unsupported or corrupted image file.'));
       img.onload = () => {
-        const maxWidth = 1200;
+        const maxWidth = 1000;
         const scale = img.width > maxWidth ? maxWidth / img.width : 1;
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * scale);
@@ -166,7 +169,7 @@ async function readNationalIdFileToDataUrl(file: File): Promise<string> {
           return;
         }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.88));
+        resolve(canvas.toDataURL('image/jpeg', 0.78));
       };
       img.src = String(reader.result);
     };
@@ -179,6 +182,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   user,
   googleConnected = false,
   onConnectGoogle,
+  onProfileSaved,
 }) => {
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
   const [schedules, setSchedules] = useState<
@@ -238,6 +242,8 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   const [empLastDocUpdatedAt, setEmpLastDocUpdatedAt] = useState<string | undefined>(undefined);
   const [empLastDocUpdatedBy, setEmpLastDocUpdatedBy] = useState<string | undefined>(undefined);
   const [savingEmp, setSavingEmp] = useState(false);
+  const [modalError, setModalError] = useState('');
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadingIdSide, setUploadingIdSide] = useState<'front' | 'back' | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -353,6 +359,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedAt(undefined);
     setEmpLastDocUpdatedBy(undefined);
     setError('');
+    setModalError('');
     setShowEmpModal(true);
   };
 
@@ -384,14 +391,15 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedAt(undefined);
     setEmpLastDocUpdatedBy(undefined);
     setError('');
+    setModalError('');
     setShowEmpModal(true);
   };
 
   const openEditEmployeeModal = (emp: EmployeeRecord) => {
     setEditingEmpId(emp.id);
-    setEmpName(emp.fullName);
-    setEmpRole(emp.roleTitle);
-    setEmpPhone(emp.phone);
+    setEmpName(emp.fullName || user.name || '');
+    setEmpRole(emp.roleTitle || 'Salon Stylist');
+    setEmpPhone(emp.phone || '');
     setEmpSecondaryPhone(emp.secondaryPhone || '');
     setEmpEmail(emp.email || '');
     setEmpNationalId(emp.nationalId || '');
@@ -401,7 +409,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpEmergencyName(emp.emergencyContactName || '');
     setEmpEmergencyPhone(emp.emergencyContactPhone || '');
     setEmpAvatarUrl(emp.avatarUrl || '');
-    setEmpHireDate(emp.hireDate || new Date().toISOString().slice(0, 10));
+    setEmpHireDate((emp.hireDate || new Date().toISOString()).slice(0, 10));
     setEmpSpecialties((emp.specialties || []).join(', '));
     setEmpShiftStart(emp.defaultShiftStart || '08:00');
     setEmpShiftEnd(emp.defaultShiftEnd || '20:00');
@@ -411,6 +419,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpLastDocUpdatedAt(emp.lastDocumentUpdatedAt);
     setEmpLastDocUpdatedBy(emp.lastDocumentUpdatedBy);
     setError('');
+    setModalError('');
     setShowEmpModal(true);
   };
 
@@ -418,12 +427,12 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingPhoto(true);
-    setError('');
+    setModalError('');
     try {
       const dataUrl = await resizeImageFileToDataUrl(file);
       setEmpAvatarUrl(dataUrl);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process profile picture.');
+      setModalError(err instanceof Error ? err.message : 'Failed to process profile picture.');
     } finally {
       setUploadingPhoto(false);
       if (fileInputRef.current) {
@@ -439,7 +448,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingIdSide(side);
-    setError('');
+    setModalError('');
     try {
       const dataUrl = await readNationalIdFileToDataUrl(file);
       if (side === 'front') {
@@ -448,7 +457,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         setEmpIdBackUrl(dataUrl);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload National ID file.');
+      setModalError(err instanceof Error ? err.message : 'Failed to upload National ID file.');
     } finally {
       setUploadingIdSide(null);
       if (side === 'front' && idFrontInputRef.current) {
@@ -469,25 +478,31 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   const handleSaveEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setModalError('');
     setMsg('');
-    if (empWorkingDays.length === 0) {
-      setError('Please select at least one working day for the employee.');
+
+    if (!empName.trim() || !empPhone.trim()) {
+      setModalError('Full name and primary contact phone are required.');
       return;
     }
 
-    setSavingEmp(true);
+    if (!isEmployeeSelf && empWorkingDays.length === 0) {
+      setModalError('Please select at least one working day for the employee.');
+      return;
+    }
+
     const payload = {
-      fullName: empName,
-      roleTitle: empRole,
-      phone: empPhone,
-      secondaryPhone: empSecondaryPhone,
-      email: empEmail,
-      nationalId: empNationalId,
+      fullName: empName.trim(),
+      roleTitle: (empRole || 'Salon Stylist').trim(),
+      phone: empPhone.trim(),
+      secondaryPhone: empSecondaryPhone.trim(),
+      email: empEmail.trim(),
+      nationalId: empNationalId.trim().toUpperCase(),
       nationalIdDocumentUrl: empIdFrontUrl,
       nationalIdBackUrl: empIdBackUrl,
-      homeAddress: empHomeAddress,
-      emergencyContactName: empEmergencyName,
-      emergencyContactPhone: empEmergencyPhone,
+      homeAddress: empHomeAddress.trim(),
+      emergencyContactName: empEmergencyName.trim(),
+      emergencyContactPhone: empEmergencyPhone.trim(),
       avatarUrl: empAvatarUrl,
       hireDate: empHireDate,
       specialties: empSpecialties
@@ -502,6 +517,14 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
       active: empStatus === 'Active',
     };
 
+    if (JSON.stringify(payload).length > 3_800_000) {
+      setModalError(
+        'Combined profile photo and National ID files exceed the 3.8 MB upload limit. Please use smaller images or save one document at a time.'
+      );
+      return;
+    }
+
+    setSavingEmp(true);
     try {
       let saveRes: { employee: EmployeeRecord; driveWarning?: string };
       if (editingEmpId) {
@@ -514,10 +537,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         );
         setMsg(
           saveRes.driveWarning
-            ? `Updated profile for ${empName}.`
+            ? `Updated profile for ${empName.trim()}.`
             : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-              ? `Updated profile for ${empName} and synced media to Google Drive.`
-              : `Updated profile for ${empName}.`
+              ? `Updated profile for ${empName.trim()} and synced media to Google Drive.`
+              : `Updated profile for ${empName.trim()}.`
         );
       } else {
         const endpoint = isEmployeeSelf ? '/api/employees/me' : '/api/employees';
@@ -527,21 +550,23 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         });
         setMsg(
           isEmployeeSelf
-            ? `Your employee profile has been saved.`
+            ? 'Your employee profile has been saved.'
             : saveRes.driveWarning
-              ? `Registered new employee: ${empName}.`
+              ? `Registered new employee: ${empName.trim()}.`
               : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-                ? `Registered ${empName} and stored photo/ID documents on Google Drive.`
-                : `Registered new employee: ${empName}.`
+                ? `Registered ${empName.trim()} and stored photo/ID documents on Google Drive.`
+                : `Registered new employee: ${empName.trim()}.`
         );
       }
       if (saveRes.driveWarning) {
         setError(saveRes.driveWarning);
       }
       setShowEmpModal(false);
+      setModalError('');
+      onProfileSaved?.();
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save employee record.');
+      setModalError(err instanceof Error ? err.message : 'Failed to save employee record.');
     } finally {
       setSavingEmp(false);
     }
@@ -825,14 +850,23 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                 </>
               )}
               {isEmployeeSelf && (
-                <button
-                  type="button"
-                  onClick={openSelfProfileModal}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white text-xs font-semibold cursor-pointer"
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  {employees.length > 0 ? 'Edit My Profile' : 'Fill My Profile'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowChangePassword(true)}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] text-[#1D1717] text-xs font-semibold cursor-pointer"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 text-[#E83B84]" /> Change Password
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openSelfProfileModal}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12f74] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    {employees.length > 0 ? 'Edit My Profile' : 'Fill My Profile'}
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -1470,12 +1504,21 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
               </div>
               <button
                 type="button"
-                onClick={() => setShowEmpModal(false)}
+                onClick={() => {
+                  setModalError('');
+                  setShowEmpModal(false);
+                }}
                 className="p-1.5 rounded-lg hover:bg-[#F8EEEB] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
+                {modalError}
+              </div>
+            )}
 
             {/* Profile Picture Uploader */}
             <div className="bg-[#F8EEEB] rounded-2xl p-4 flex flex-col sm:flex-row items-center gap-4">
@@ -1895,10 +1938,19 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
               )}
             </div>
 
+            {modalError && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
+                {modalError}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 pt-3 border-t border-[#1D1717]/10">
               <button
                 type="button"
-                onClick={() => setShowEmpModal(false)}
+                onClick={() => {
+                  setModalError('');
+                  setShowEmpModal(false);
+                }}
                 className="px-4 py-2 rounded-xl border border-[#1D1717]/15 text-xs font-semibold cursor-pointer"
               >
                 Cancel
@@ -2422,6 +2474,12 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         destructive
         onCancel={() => setDeleteEmpTarget(null)}
         onConfirm={() => void handleConfirmDeleteEmployee()}
+      />
+
+      <ChangePasswordModal
+        open={showChangePassword}
+        onClose={() => setShowChangePassword(false)}
+        userEmail={user.email}
       />
     </div>
   );

@@ -53,9 +53,24 @@ export async function apiFetch<T = unknown>(
   });
 
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: Record<string, unknown> = {};
+  if (text) {
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error('Uploaded files are too large for the server. Please use smaller image or PDF files.');
+        }
+        throw new Error(`Request failed (${res.status}): ${text.slice(0, 140)}`);
+      }
+      throw new Error('Server returned an unexpected non-JSON response.');
+    }
+  }
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    throw new Error(
+      typeof data.error === 'string' && data.error ? data.error : `Request failed (${res.status})`
+    );
   }
   return data as T;
 }

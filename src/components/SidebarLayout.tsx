@@ -24,7 +24,9 @@ import {
   X,
   LogOut,
   Cloud,
+  KeyRound,
 } from 'lucide-react';
+import { ChangePasswordModal } from './ChangePasswordModal';
 import type { NavSection, SalonBranding, SessionUser, UserRole } from '../types';
 
 interface NavItemConfig {
@@ -82,6 +84,7 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [bgError, setBgError] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   const visibleNav = NAV_ITEMS.filter((item) => item.roles.includes(user.role));
   const activeTitle = visibleNav.find((i) => i.id === activeSection)?.label || 'Dashboard';
@@ -157,16 +160,30 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
 
       <div className="p-4 border-t border-[#1D1717]/10 bg-[#F8EEEB]/70">
         <div className="text-xs font-semibold text-[#1D1717] truncate">{user.name}</div>
-        <div className="text-xs text-[#1D1717]/60 capitalize mt-0.5">
+        <div className="text-xs text-[#1D1717]/60 capitalize mt-0.5 truncate">
           {user.role} &middot; {user.email}
         </div>
-        <button
-          onClick={onLogout}
-          className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/35 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
-        >
-          <LogOut className="w-3.5 h-3.5" />
-          <span>Sign Out</span>
-        </button>
+        <div className="mt-3 space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              setShowPasswordModal(true);
+              setMobileOpen(false);
+            }}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/35 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
+          >
+            <KeyRound className="w-3.5 h-3.5 text-[#E83B84]" />
+            <span>Change Password</span>
+          </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#1D1717]/15 bg-white hover:bg-[#F3BFD3]/35 text-xs font-semibold text-[#1D1717] transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -278,6 +295,12 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
           {children}
         </main>
       </div>
+
+      <ChangePasswordModal
+        open={showPasswordModal}
+        onClose={() => setShowPasswordModal(false)}
+        userEmail={user.email}
+      />
     </div>
   );
 };

@@ -452,9 +452,66 @@ export function createApiRouter() {
     res.json({
       user: {
         ...sessionUser,
+        name: resolvedEmp?.fullName || sessionUser.name,
         employeeId: resolvedEmp?.id || sessionUser.employeeId,
       },
     });
+  });
+
+  router.post('/auth/change-password', requireAuth, (req: AuthenticatedRequest, res) => {
+    const { currentPassword, newPassword } = req.body as {
+      currentPassword?: string;
+      newPassword?: string;
+    };
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'Current password and new password are required.' });
+      return;
+    }
+    if (newPassword.length < 6) {
+      res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+      return;
+    }
+    if (newPassword.length > 128) {
+      res.status(400).json({ error: 'New password is too long (maximum 128 characters).' });
+      return;
+    }
+    if (currentPassword === newPassword) {
+      res.status(400).json({ error: 'New password must be different from your current password.' });
+      return;
+    }
+
+    const db = readDb();
+    const actor = req.sessionUser!;
+    const dbUser = db.users.find((u) => u.id === actor.userId);
+    if (!dbUser || !dbUser.active) {
+      res.status(404).json({ error: 'User account not found or inactive.' });
+      return;
+    }
+    if (!verifyPassword(currentPassword, dbUser.passwordHash)) {
+      appendAuditLog(
+        db,
+        actor,
+        'USER_PASSWORD_CHANGE_FAILED',
+        'User',
+        dbUser.id,
+        `Incorrect current password entered while attempting to change password.`
+      );
+      writeDb(db);
+      res.status(401).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+
+    dbUser.passwordHash = hashPassword(newPassword);
+    appendAuditLog(
+      db,
+      actor,
+      'USER_PASSWORD_CHANGED',
+      'User',
+      dbUser.id,
+      `User ${dbUser.email} changed their account password.`
+    );
+    writeDb(db);
+    res.json({ ok: true, message: 'Password updated successfully.' });
   });
 
   // ==================== DASHBOARD ====================
@@ -1224,8 +1281,9 @@ export function createApiRouter() {
     if (val.length > 1_500_000) {
       throw new Error('Profile picture file is too large. Please upload a smaller image (under 1 MB).');
     }
-    const isSafeDataImage = /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/i.test(val);
-    const isSafeUrl = /^https?:\/\/.+/i.test(val) || val.startsWith('/src/assets/');
+    const isSafeDataImage = /^data:image\/(png|jpeg|jpg|webp)(?:;[a-z0-9=._-]+)*;base64,[A-Za-z0-9+/=\s]+$/i.test(val);
+    const isSafeUrl =
+      /^https?:\/\/.+/i.test(val) || val.startsWith('/src/assets/') || val.startsWith('/assets/');
     if (!isSafeDataImage && !isSafeUrl) {
       throw new Error('Invalid profile picture format. Please upload a PNG, JPG, or WebP image.');
     }
@@ -1239,8 +1297,9 @@ export function createApiRouter() {
     if (val.length > 3_500_000) {
       throw new Error(`${label} file is too large. Please upload a smaller image or PDF (under 2.5 MB).`);
     }
-    const isSafeDataDoc = /^data:(image\/(png|jpeg|jpg|webp)|application\/pdf);base64,[A-Za-z0-9+/=]+$/i.test(val);
-    const isSafeUrl = /^https?:\/\/.+/i.test(val);
+    const isSafeDataDoc = /^data:(image\/(png|jpeg|jpg|webp)|application\/pdf)(?:;[a-z0-9=._-]+)*;base64,[A-Za-z0-9+/=\s]+$/i.test(val);
+    const isSafeUrl =
+      /^https?:\/\/.+/i.test(val) || val.startsWith('/src/assets/') || val.startsWith('/assets/');
     if (!isSafeDataDoc && !isSafeUrl) {
       throw new Error(`Invalid ${label} format. Please upload a PNG, JPG, WebP image or PDF.`);
     }

@@ -146,6 +146,15 @@ export default function App() {
     }
   };
 
+  const refreshCurrentUser = async () => {
+    try {
+      const res = await apiFetch<{ user: SessionUser }>('/api/auth/me');
+      setUser(res.user);
+    } catch {
+      // Keep existing session user if refresh fails
+    }
+  };
+
   useEffect(() => {
     const unsub = initGoogleWorkspaceAuth(
       () => setGoogleConnected(true),
@@ -313,6 +322,7 @@ export default function App() {
             user={user}
             googleConnected={effectiveWorkspaceConnected}
             onConnectGoogle={handleHeaderWorkspaceAction}
+            onProfileSaved={() => void refreshCurrentUser()}
           />
         )}
         {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
