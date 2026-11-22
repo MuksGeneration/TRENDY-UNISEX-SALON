@@ -433,11 +433,14 @@ export function buildSheetMatrix(
       ]),
     ],
     'Stock Items': [
-      ['ID', 'SKU', 'Name', 'Category', 'Brand', 'Unit', 'CurrentQty', 'PurchasePriceUGX', 'SellingPriceUGX', 'MinLevel', 'Retail'],
+      ['ID', 'SKU', 'Name', 'InventoryPart', 'Category', 'Brand', 'Unit', 'CurrentQty', 'PurchasePriceUGX', 'SellingPriceUGX', 'MinLevel', 'Retail'],
       ...db.stockItems.map((s) => [
         s.id,
         s.sku,
         s.name,
+        s.inventoryGroup === 'for_sale' || (s.inventoryGroup !== 'salon_owned' && s.isRetail)
+          ? 'Items for Sale'
+          : 'Owned by Salon',
         s.category,
         s.brand,
         s.unit,

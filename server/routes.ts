@@ -2363,8 +2363,14 @@ export function createApiRouter() {
           });
         } else {
           const stock = db.stockItems.find((s) => s.id === line.refId);
-          if (!stock) {
+          if (!stock || stock.active === false) {
             res.status(404).json({ error: `Retail product not found: ${line.refId}` });
+            return;
+          }
+          if (stock.inventoryGroup === 'salon_owned' || !stock.isRetail) {
+            res.status(400).json({
+              error: `"${stock.name}" is marked as Owned by Salon (internal use) and cannot be sold in POS.`,
+            });
             return;
           }
           if (stock.currentQuantity < qty) {
@@ -3080,6 +3086,13 @@ export function createApiRouter() {
         return;
       }
       const openQty = Math.max(0, Number(b.openingQuantity) || 0);
+      const inventoryGroup: 'salon_owned' | 'for_sale' =
+        b.inventoryGroup === 'salon_owned' || b.inventoryGroup === 'for_sale'
+          ? b.inventoryGroup
+          : b.isRetail
+          ? 'for_sale'
+          : 'salon_owned';
+      const isRetail = inventoryGroup === 'for_sale';
       const item: StockItem = {
         id: makeId('STK'),
         sku: b.sku?.trim() || `TUS-${Date.now().toString(36).toUpperCase()}`,
@@ -3091,13 +3104,14 @@ export function createApiRouter() {
         openingQuantity: openQty,
         currentQuantity: openQty,
         purchasePrice: Math.max(0, Number(b.purchasePrice) || 0),
-        sellingPrice: Math.max(0, Number(b.sellingPrice) || 0),
+        sellingPrice: isRetail ? Math.max(0, Number(b.sellingPrice) || 0) : 0,
         supplierId: b.supplierId,
         supplierName: db.suppliers.find((s) => s.id === b.supplierId)?.name || b.supplierName,
         minStockLevel:
           b.minStockLevel !== undefined ? Math.max(0, Number(b.minStockLevel) || 0) : 3,
         expirationDate: b.expirationDate,
-        isRetail: Boolean(b.isRetail),
+        isRetail,
+        inventoryGroup,
         active: true,
       };
       db.stockItems.push(item);
@@ -3111,7 +3125,7 @@ export function createApiRouter() {
           quantityDelta: openQty,
           quantityAfter: openQty,
           unitCost: item.purchasePrice,
-          notes: 'Initial stock registration',
+          notes: `Initial stock registration (${inventoryGroup === 'for_sale' ? 'Items for Sale' : 'Owned by Salon'})`,
           recordedBy: req.sessionUser!.name,
           createdAt: new Date().toISOString(),
         });
@@ -3134,10 +3148,90 @@ export function createApiRouter() {
         'STOCK_ITEM_CREATED',
         'StockItem',
         item.id,
-        `Added stock item ${item.name} (${openQty} ${item.unit}).`
+        `Added stock item ${item.name} (${openQty} ${item.unit}) under ${inventoryGroup === 'for_sale' ? 'Items for Sale' : 'Owned by Salon'}.`
       );
       writeDb(db);
       res.status(201).json({ item });
+    }
+  );
+
+  router.patch(
+    '/inventory/:id',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const item = db.stockItems.find((s) => s.id === req.params.id);
+      if (!item) {
+        res.status(404).json({ error: 'Stock item not found.' });
+        return;
+      }
+      const b = req.body as Partial<StockItem>;
+      if (b.name !== undefined) {
+        if (!b.name.trim()) {
+          res.status(400).json({ error: 'Product name cannot be empty.' });
+          return;
+        }
+        item.name = b.name.trim();
+      }
+      if (b.category !== undefined) {
+        if (!b.category.trim()) {
+          res.status(400).json({ error: 'Category cannot be empty.' });
+          return;
+        }
+        item.category = b.category.trim();
+      }
+      if (b.brand !== undefined) item.brand = b.brand.trim() || 'Salon Stock';
+      if (b.unit !== undefined) item.unit = b.unit.trim() || 'Unit';
+      if (b.purchasePrice !== undefined) item.purchasePrice = Math.max(0, Number(b.purchasePrice) || 0);
+      if (b.minStockLevel !== undefined) item.minStockLevel = Math.max(0, Number(b.minStockLevel) || 0);
+      if (b.inventoryGroup === 'salon_owned' || b.inventoryGroup === 'for_sale') {
+        item.inventoryGroup = b.inventoryGroup;
+        item.isRetail = b.inventoryGroup === 'for_sale';
+      } else if (b.isRetail !== undefined) {
+        item.isRetail = Boolean(b.isRetail);
+        item.inventoryGroup = item.isRetail ? 'for_sale' : 'salon_owned';
+      }
+      if (b.sellingPrice !== undefined) {
+        item.sellingPrice = item.isRetail ? Math.max(0, Number(b.sellingPrice) || 0) : 0;
+      } else if (!item.isRetail) {
+        item.sellingPrice = 0;
+      }
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'STOCK_ITEM_UPDATED',
+        'StockItem',
+        item.id,
+        `Updated stock item ${item.name} (${item.isRetail ? 'Items for Sale' : 'Owned by Salon'}).`
+      );
+      writeDb(db);
+      res.json({ item });
+    }
+  );
+
+  router.delete(
+    '/inventory/:id',
+    requireAuth,
+    requireRole(['owner', 'manager']),
+    (req: AuthenticatedRequest, res) => {
+      const db = readDb();
+      const index = db.stockItems.findIndex((s) => s.id === req.params.id);
+      if (index === -1) {
+        res.status(404).json({ error: 'Stock item not found.' });
+        return;
+      }
+      const [removed] = db.stockItems.splice(index, 1);
+      appendAuditLog(
+        db,
+        req.sessionUser!,
+        'STOCK_ITEM_DELETED',
+        'StockItem',
+        removed.id,
+        `Deleted stock item ${removed.name} (${removed.sku}, remaining qty: ${removed.currentQuantity} ${removed.unit}).`
+      );
+      writeDb(db);
+      res.json({ deleted: true, id: removed.id, item: removed });
     }
   );
 

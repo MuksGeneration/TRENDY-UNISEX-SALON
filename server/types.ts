@@ -443,6 +443,7 @@ export interface StockItem {
   minStockLevel: number;
   expirationDate?: string;
   isRetail: boolean;
+  inventoryGroup?: 'salon_owned' | 'for_sale';
   active: boolean;
 }
 

@@ -8,7 +8,12 @@ import {
   FileText,
   FileDown,
   ClipboardList,
+  Trash2,
+  Pencil,
+  Briefcase,
+  ShoppingBag,
 } from 'lucide-react';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { apiFetch, exportReportToPdf, exportRowsToExcel, formatUGX } from '../lib/api';
 import type { ExpenseRecord, PaymentMethod, SessionUser, StockItem } from '../types';
 
@@ -72,8 +77,12 @@ export const ExpensesInventoryView: React.FC<{
   >([]);
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string; phone: string }>>([]);
   const [invTab, setInvTab] = useState<'items' | 'movements' | 'suppliers'>('items');
+  const [inventoryPartFilter, setInventoryPartFilter] = useState<'all' | 'salon_owned' | 'for_sale'>('all');
   const [stockFilter, setStockFilter] = useState<'all' | 'stock_low' | 'below_reorder'>('all');
   const [showStockModal, setShowStockModal] = useState(false);
+  const [editingStockItem, setEditingStockItem] = useState<StockItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<StockItem | null>(null);
+  const [deletingStockId, setDeletingStockId] = useState<string | null>(null);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [creatingRestockReport, setCreatingRestockReport] = useState(false);
   const [restockReport, setRestockReport] = useState<RestockReport | null>(null);
@@ -86,7 +95,7 @@ export const ExpensesInventoryView: React.FC<{
   const [stkCost, setStkCost] = useState(10000);
   const [stkSell, setStkSell] = useState(20000);
   const [stkMin, setStkMin] = useState(3);
-  const [stkRetail, setStkRetail] = useState(true);
+  const [stkGroup, setStkGroup] = useState<'salon_owned' | 'for_sale'>('for_sale');
 
   const [movItemId, setMovItemId] = useState('');
   const [movType, setMovType] = useState<
@@ -116,7 +125,9 @@ export const ExpensesInventoryView: React.FC<{
         setStockItems(res.items);
         setMovements(res.movements);
         setSuppliers(res.suppliers);
-        if (res.items.length > 0 && !movItemId) setMovItemId(res.items[0].id);
+        if (res.items.length > 0 && !res.items.some((i) => i.id === movItemId)) {
+          setMovItemId(res.items[0].id);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data.');
@@ -163,30 +174,117 @@ export const ExpensesInventoryView: React.FC<{
     }
   };
 
-  const handleAddStock = async (e: React.FormEvent) => {
+  const getItemGroup = (item: StockItem): 'salon_owned' | 'for_sale' =>
+    item.inventoryGroup === 'salon_owned' || item.inventoryGroup === 'for_sale'
+      ? item.inventoryGroup
+      : item.isRetail
+      ? 'for_sale'
+      : 'salon_owned';
+
+  const openAddStockModal = (defaultGroup: 'salon_owned' | 'for_sale' = 'for_sale') => {
+    setEditingStockItem(null);
+    setStkName('');
+    setStkCat(defaultGroup === 'salon_owned' ? 'Salon supplies' : 'Hair products');
+    setStkBrand('');
+    setStkUnit(defaultGroup === 'salon_owned' ? 'Piece' : 'Bottle');
+    setStkOpenQty(10);
+    setStkCost(10000);
+    setStkSell(defaultGroup === 'for_sale' ? 20000 : 0);
+    setStkMin(3);
+    setStkGroup(defaultGroup);
+    setShowStockModal(true);
+  };
+
+  const openEditStockModal = (item: StockItem) => {
+    const group = getItemGroup(item);
+    setEditingStockItem(item);
+    setStkName(item.name);
+    setStkCat(item.category);
+    setStkBrand(item.brand || '');
+    setStkUnit(item.unit || 'Unit');
+    setStkOpenQty(item.openingQuantity);
+    setStkCost(item.purchasePrice);
+    setStkSell(item.sellingPrice);
+    setStkMin(item.minStockLevel);
+    setStkGroup(group);
+    setShowStockModal(true);
+  };
+
+  const handleSaveStock = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setMsg('');
+    const isForSale = stkGroup === 'for_sale';
     try {
-      await apiFetch('/api/inventory', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: stkName,
-          category: stkCat,
-          brand: stkBrand,
-          unit: stkUnit,
-          openingQuantity: stkOpenQty,
-          purchasePrice: stkCost,
-          sellingPrice: stkRetail ? stkSell : 0,
-          minStockLevel: stkMin,
-          isRetail: stkRetail,
-        }),
-      });
+      if (editingStockItem) {
+        await apiFetch(`/api/inventory/${editingStockItem.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: stkName,
+            category: stkCat,
+            brand: stkBrand,
+            unit: stkUnit,
+            purchasePrice: stkCost,
+            sellingPrice: isForSale ? stkSell : 0,
+            minStockLevel: stkMin,
+            isRetail: isForSale,
+            inventoryGroup: stkGroup,
+          }),
+        });
+        setMsg(`Updated "${stkName}".`);
+      } else {
+        await apiFetch('/api/inventory', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: stkName,
+            category: stkCat,
+            brand: stkBrand,
+            unit: stkUnit,
+            openingQuantity: stkOpenQty,
+            purchasePrice: stkCost,
+            sellingPrice: isForSale ? stkSell : 0,
+            minStockLevel: stkMin,
+            isRetail: isForSale,
+            inventoryGroup: stkGroup,
+          }),
+        });
+        setMsg(
+          `Registered "${stkName}" under ${isForSale ? 'Items for Sale' : 'Owned by Salon'}.`
+        );
+      }
       setShowStockModal(false);
+      setEditingStockItem(null);
       setStkName('');
-      setMsg('Stock item registered.');
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add stock item.');
+      setError(
+        err instanceof Error
+          ? err.message
+          : editingStockItem
+          ? 'Failed to update stock item.'
+          : 'Failed to add stock item.'
+      );
+    }
+  };
+
+  const handleDeleteStock = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setError('');
+    setMsg('');
+    setDeletingStockId(target.id);
+    try {
+      await apiFetch(`/api/inventory/${target.id}`, {
+        method: 'DELETE',
+      });
+      setDeleteTarget(null);
+      setMsg(`Deleted "${target.name}" (${target.sku}) from inventory.`);
+      await load();
+    } catch (err) {
+      setDeleteTarget(null);
+      setError(err instanceof Error ? err.message : 'Failed to delete stock item.');
+    } finally {
+      setDeletingStockId(null);
     }
   };
 
@@ -508,7 +606,22 @@ export const ExpensesInventoryView: React.FC<{
     return Math.max(1, target - item.currentQuantity);
   };
 
-  const totalValuation = stockItems.reduce((s, i) => s + i.currentQuantity * i.purchasePrice, 0);
+  const salonOwnedItems = stockItems.filter((item) => getItemGroup(item) === 'salon_owned');
+  const forSaleItems = stockItems.filter((item) => getItemGroup(item) === 'for_sale');
+
+  const salonOwnedValuation = salonOwnedItems.reduce(
+    (s, i) => s + i.currentQuantity * i.purchasePrice,
+    0
+  );
+  const forSaleCostValuation = forSaleItems.reduce(
+    (s, i) => s + i.currentQuantity * i.purchasePrice,
+    0
+  );
+  const forSaleRetailValuation = forSaleItems.reduce(
+    (s, i) => s + i.currentQuantity * i.sellingPrice,
+    0
+  );
+  const totalValuation = salonOwnedValuation + forSaleCostValuation;
   const criticalStockLowItems = stockItems.filter(isCriticalStockLow);
   const belowReorderItems = stockItems.filter(isBelowReorder);
   const criticalRestockEstCost = criticalStockLowItems.reduce(
@@ -516,11 +629,211 @@ export const ExpensesInventoryView: React.FC<{
     0
   );
 
-  const visibleStockItems = stockItems.filter((item) => {
+  const matchesStockFilter = (item: StockItem) => {
     if (stockFilter === 'stock_low') return isCriticalStockLow(item);
     if (stockFilter === 'below_reorder') return isBelowReorder(item);
     return true;
-  });
+  };
+
+  const visibleSalonOwned = salonOwnedItems.filter(matchesStockFilter);
+  const visibleForSale = forSaleItems.filter(matchesStockFilter);
+
+  const renderInventorySection = (
+    group: 'salon_owned' | 'for_sale',
+    items: StockItem[]
+  ) => {
+    const isForSale = group === 'for_sale';
+    const sectionCost = items.reduce((s, i) => s + i.currentQuantity * i.purchasePrice, 0);
+    const sectionRetail = items.reduce((s, i) => s + i.currentQuantity * i.sellingPrice, 0);
+
+    return (
+      <div
+        key={group}
+        className="border border-[#1D1717]/10 rounded-2xl overflow-hidden bg-white"
+      >
+        <div
+          className={`px-5 py-4 border-b border-[#1D1717]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+            isForSale ? 'bg-[#F3BFD3]/25' : 'bg-[#F8EEEB]/85'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                isForSale
+                  ? 'bg-[#E83B84]/15 text-[#E83B84]'
+                  : 'bg-[#1D1717]/10 text-[#1D1717]'
+              }`}
+            >
+              {isForSale ? (
+                <ShoppingBag className="w-4 h-4" />
+              ) : (
+                <Briefcase className="w-4 h-4" />
+              )}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-bold text-[#1D1717]">
+                  {isForSale ? 'Items for Sale (Retail Products)' : 'Items Owned by Salon (Internal Supplies & Equipment)'}
+                </h3>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-white border border-[#1D1717]/10 text-[#1D1717]/75">
+                  {items.length} SKU{items.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#1D1717]/65 mt-0.5 font-mono tabular-nums">
+                {isForSale
+                  ? `Sold to clients at POS checkout · Cost Value: ${formatUGX(sectionCost)} · Retail Value: ${formatUGX(sectionRetail)}`
+                  : `Owned by salon for treatments, sanitation & tools (not listed in POS) · Asset/Stock Cost: ${formatUGX(sectionCost)}`}
+              </p>
+            </div>
+          </div>
+          {canManageInv && (
+            <button
+              type="button"
+              onClick={() => openAddStockModal(group)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer whitespace-nowrap w-fit ${
+                isForSale
+                  ? 'bg-[#E83B84] text-white hover:bg-[#d12d73]'
+                  : 'bg-[#1D1717] text-white hover:bg-[#332a2a]'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isForSale ? 'Add Item for Sale' : 'Add Salon-Owned Item'}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="p-4 overflow-x-auto">
+          {items.length === 0 ? (
+            <p className="text-xs text-[#1D1717]/60 py-8 text-center">
+              {stockFilter === 'all'
+                ? isForSale
+                  ? 'No retail items for sale registered yet.'
+                  : 'No salon-owned supplies or equipment registered yet.'
+                : 'No items in this part match the selected stock alert filter.'}
+            </p>
+          ) : (
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
+                  <th className="py-3 px-3">SKU</th>
+                  <th className="py-3 px-3">Product Name</th>
+                  <th className="py-3 px-3">Category &amp; Brand</th>
+                  <th className="py-3 px-3 text-right">Stock Qty</th>
+                  <th className="py-3 px-3 text-right">Reorder Level</th>
+                  <th className="py-3 px-3">Stock Status</th>
+                  <th className="py-3 px-3 text-right">Cost Price</th>
+                  <th className="py-3 px-3 text-right">
+                    {isForSale ? 'Selling Price' : 'Usage'}
+                  </th>
+                  {canManageInv && <th className="py-3 px-3 text-right">Actions</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#1D1717]/10">
+                {items.map((item) => {
+                  const criticalLow = isCriticalStockLow(item);
+                  const belowMin = isBelowReorder(item);
+                  const reorderPct = getReorderPercent(item);
+                  return (
+                    <tr
+                      key={item.id}
+                      className={
+                        criticalLow
+                          ? 'bg-red-50/60 hover:bg-red-50/90'
+                          : belowMin
+                          ? 'bg-amber-50/40 hover:bg-amber-50/70'
+                          : 'hover:bg-[#F8EEEB]/50'
+                      }
+                    >
+                      <td className="py-3 px-3 font-mono text-[#1D1717]/70">{item.sku}</td>
+                      <td className="py-3 px-3 font-semibold text-[#1D1717]">{item.name}</td>
+                      <td className="py-3 px-3">
+                        {item.category} &middot; {item.brand}
+                      </td>
+                      <td
+                        className={`py-3 px-3 text-right font-mono tabular-nums font-bold ${
+                          criticalLow ? 'text-red-700' : belowMin ? 'text-amber-700' : ''
+                        }`}
+                      >
+                        {item.currentQuantity} {item.unit}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono tabular-nums">
+                        {item.minStockLevel}
+                        {item.minStockLevel > 0 && (
+                          <span className="block text-[10px] text-[#1D1717]/50">
+                            10% alert: &lt;{(item.minStockLevel * 0.1).toFixed(1)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3">
+                        {criticalLow ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 text-red-700 font-bold">
+                              <AlertTriangle className="w-3.5 h-3.5" /> Stock Low
+                            </span>
+                            <div className="text-[11px] font-mono tabular-nums text-red-700/80">
+                              {reorderPct}% of reorder (&lt;10%)
+                            </div>
+                          </div>
+                        ) : belowMin ? (
+                          <div>
+                            <span className="text-amber-700 font-semibold">Below Reorder</span>
+                            <div className="text-[11px] font-mono tabular-nums text-amber-700/80">
+                              {reorderPct}% of reorder
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <span className="text-emerald-700 font-medium">Healthy</span>
+                            <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/55">
+                              {reorderPct}% of reorder
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono tabular-nums">
+                        {formatUGX(item.purchasePrice)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold">
+                        {isForSale ? (
+                          <span className="text-[#E83B84]">{formatUGX(item.sellingPrice)}</span>
+                        ) : (
+                          <span className="text-[#1D1717]/65 font-sans">Salon Owned</span>
+                        )}
+                      </td>
+                      {canManageInv && (
+                        <td className="py-3 px-3 text-right whitespace-nowrap space-x-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openEditStockModal(item)}
+                            title={`Edit ${item.name}`}
+                            aria-label={`Edit ${item.name}`}
+                            className="inline-flex items-center justify-center p-1.5 rounded-lg border border-[#1D1717]/15 bg-white hover:bg-[#F8EEEB] text-[#1D1717]/80 cursor-pointer"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={deletingStockId === item.id}
+                            onClick={() => setDeleteTarget(item)}
+                            title={`Delete ${item.name}`}
+                            aria-label={`Delete ${item.name}`}
+                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 font-semibold cursor-pointer disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete</span>
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -554,7 +867,7 @@ export const ExpensesInventoryView: React.FC<{
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-xs font-mono tabular-nums">
-            Valuation: <strong>{formatUGX(totalValuation)}</strong> &middot;{' '}
+            Total Cost Value: <strong>{formatUGX(totalValuation)}</strong> &middot;{' '}
             <span className={criticalStockLowItems.length > 0 ? 'text-red-700 font-bold' : 'text-[#1D1717]/70'}>
               {criticalStockLowItems.length} Stock Low (&lt;10%)
             </span>
@@ -576,13 +889,16 @@ export const ExpensesInventoryView: React.FC<{
           )}
           <button
             onClick={() => setShowMoveModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#1D1717]/15 bg-white text-xs font-semibold cursor-pointer"
+            disabled={stockItems.length === 0}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#1D1717]/15 bg-white text-xs font-semibold cursor-pointer disabled:opacity-50"
           >
             <ArrowUpDown className="w-3.5 h-3.5 text-[#E83B84]" /> Record Movement / Usage
           </button>
           {canManageInv && (
             <button
-              onClick={() => setShowStockModal(true)}
+              onClick={() =>
+                openAddStockModal(inventoryPartFilter === 'salon_owned' ? 'salon_owned' : 'for_sale')
+              }
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#E83B84] text-white text-xs font-semibold cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" /> Add Stock Item
@@ -645,6 +961,9 @@ export const ExpensesInventoryView: React.FC<{
                       <span className="text-[#1D1717]/35">&middot;</span>
                       <span className="font-semibold text-[#1D1717]">{item.name}</span>
                       <span className="font-mono text-[#1D1717]/60">({item.sku})</span>
+                      <span className="text-[11px] text-[#1D1717]/60">
+                        [{getItemGroup(item) === 'for_sale' ? 'For Sale' : 'Owned by Salon'}]
+                      </span>
                     </div>
                     <div className="text-[11px] text-[#1D1717]/75 font-mono tabular-nums mt-0.5">
                       On hand: <strong className="text-red-700">{item.currentQuantity} {item.unit}</strong>
@@ -672,132 +991,128 @@ export const ExpensesInventoryView: React.FC<{
       {error && <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">{error}</div>}
       {msg && <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs">{msg}</div>}
 
-      <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
+      <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-5">
         {invTab === 'items' && (
           <>
+            {/* Two Partition Overview Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() =>
+                  setInventoryPartFilter((prev) => (prev === 'salon_owned' ? 'all' : 'salon_owned'))
+                }
+                className={`text-left p-4 rounded-2xl border transition-colors cursor-pointer ${
+                  inventoryPartFilter === 'salon_owned'
+                    ? 'border-[#1D1717] bg-[#F8EEEB]'
+                    : 'border-[#1D1717]/10 bg-[#F8EEEB]/45 hover:border-[#1D1717]/30'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="inline-flex items-center gap-2 text-xs font-bold text-[#1D1717]">
+                    <Briefcase className="w-4 h-4 text-[#1D1717]" />
+                    <span>Part 1 · Items Owned by Salon</span>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-[#1D1717]">
+                    {salonOwnedItems.length} item{salonOwnedItems.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-baseline justify-between gap-2">
+                  <span className="text-lg font-bold font-mono tabular-nums text-[#1D1717]">
+                    {formatUGX(salonOwnedValuation)}
+                  </span>
+                  <span className="text-[11px] text-[#1D1717]/60">
+                    Internal supplies, tools &amp; consumables
+                  </span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setInventoryPartFilter((prev) => (prev === 'for_sale' ? 'all' : 'for_sale'))
+                }
+                className={`text-left p-4 rounded-2xl border transition-colors cursor-pointer ${
+                  inventoryPartFilter === 'for_sale'
+                    ? 'border-[#E83B84] bg-[#F3BFD3]/25'
+                    : 'border-[#1D1717]/10 bg-[#F3BFD3]/12 hover:border-[#E83B84]/45'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="inline-flex items-center gap-2 text-xs font-bold text-[#1D1717]">
+                    <ShoppingBag className="w-4 h-4 text-[#E83B84]" />
+                    <span>Part 2 · Items for Sale</span>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-[#E83B84]">
+                    {forSaleItems.length} item{forSaleItems.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-baseline justify-between gap-2">
+                  <span className="text-lg font-bold font-mono tabular-nums text-[#1D1717]">
+                    {formatUGX(forSaleRetailValuation)}
+                    <span className="text-[11px] font-normal text-[#1D1717]/60 ml-2">
+                      (Cost: {formatUGX(forSaleCostValuation)})
+                    </span>
+                  </span>
+                  <span className="text-[11px] text-[#1D1717]/60">Retail products in POS</span>
+                </div>
+              </button>
+            </div>
+
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-1 p-1 bg-[#F8EEEB] rounded-lg w-fit">
-                {[
-                  { id: 'all', label: `All Items (${stockItems.length})` },
-                  { id: 'stock_low', label: `Stock Low <10% (${criticalStockLowItems.length})` },
-                  { id: 'below_reorder', label: `Below Reorder (${belowReorderItems.length})` },
-                ].map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setStockFilter(f.id as typeof stockFilter)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap cursor-pointer ${
-                      stockFilter === f.id
-                        ? 'bg-white text-[#1D1717] shadow-xs'
-                        : 'text-[#1D1717]/65 hover:text-[#1D1717]'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 p-1 bg-[#F8EEEB] rounded-lg w-fit">
+                  {[
+                    { id: 'all', label: `All Parts (${stockItems.length})` },
+                    { id: 'salon_owned', label: `Owned by Salon (${salonOwnedItems.length})` },
+                    { id: 'for_sale', label: `Items for Sale (${forSaleItems.length})` },
+                  ].map((part) => (
+                    <button
+                      key={part.id}
+                      type="button"
+                      onClick={() => setInventoryPartFilter(part.id as typeof inventoryPartFilter)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap cursor-pointer ${
+                        inventoryPartFilter === part.id
+                          ? 'bg-white text-[#1D1717] shadow-xs'
+                          : 'text-[#1D1717]/65 hover:text-[#1D1717]'
+                      }`}
+                    >
+                      {part.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1 p-1 bg-[#F8EEEB] rounded-lg w-fit">
+                  {[
+                    { id: 'all', label: 'All Levels' },
+                    { id: 'stock_low', label: `Stock Low <10% (${criticalStockLowItems.length})` },
+                    { id: 'below_reorder', label: `Below Reorder (${belowReorderItems.length})` },
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setStockFilter(f.id as typeof stockFilter)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap cursor-pointer ${
+                        stockFilter === f.id
+                          ? 'bg-white text-[#1D1717] shadow-xs'
+                          : 'text-[#1D1717]/65 hover:text-[#1D1717]'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
               </div>
+
               <div className="text-[11px] text-[#1D1717]/60">
                 Automated alert triggers when stock falls strictly below 10% of reorder level.
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              {visibleStockItems.length === 0 ? (
-                <p className="text-xs text-[#1D1717]/60 py-8 text-center">
-                  No inventory items match this stock filter.
-                </p>
-              ) : (
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
-                      <th className="py-3 px-3">SKU</th>
-                      <th className="py-3 px-3">Product Name</th>
-                      <th className="py-3 px-3">Category &amp; Brand</th>
-                      <th className="py-3 px-3 text-right">Stock Qty</th>
-                      <th className="py-3 px-3 text-right">Reorder Level</th>
-                      <th className="py-3 px-3">Stock Status</th>
-                      <th className="py-3 px-3 text-right">Cost Price</th>
-                      <th className="py-3 px-3 text-right">Retail Price</th>
-                      <th className="py-3 px-3">Type</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#1D1717]/10">
-                    {visibleStockItems.map((item) => {
-                      const criticalLow = isCriticalStockLow(item);
-                      const belowMin = isBelowReorder(item);
-                      const reorderPct = getReorderPercent(item);
-                      return (
-                        <tr
-                          key={item.id}
-                          className={
-                            criticalLow
-                              ? 'bg-red-50/60 hover:bg-red-50/90'
-                              : belowMin
-                              ? 'bg-amber-50/40 hover:bg-amber-50/70'
-                              : 'hover:bg-[#F8EEEB]/50'
-                          }
-                        >
-                          <td className="py-3 px-3 font-mono text-[#1D1717]/70">{item.sku}</td>
-                          <td className="py-3 px-3 font-semibold text-[#1D1717]">
-                            {item.name}
-                          </td>
-                          <td className="py-3 px-3">
-                            {item.category} &middot; {item.brand}
-                          </td>
-                          <td
-                            className={`py-3 px-3 text-right font-mono tabular-nums font-bold ${
-                              criticalLow ? 'text-red-700' : belowMin ? 'text-amber-700' : ''
-                            }`}
-                          >
-                            {item.currentQuantity} {item.unit}
-                          </td>
-                          <td className="py-3 px-3 text-right font-mono tabular-nums">
-                            {item.minStockLevel}
-                            {item.minStockLevel > 0 && (
-                              <span className="block text-[10px] text-[#1D1717]/50">
-                                10% alert: &lt;{(item.minStockLevel * 0.1).toFixed(1)}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-3">
-                            {criticalLow ? (
-                              <div>
-                                <span className="inline-flex items-center gap-1 text-red-700 font-bold">
-                                  <AlertTriangle className="w-3.5 h-3.5" /> Stock Low
-                                </span>
-                                <div className="text-[11px] font-mono tabular-nums text-red-700/80">
-                                  {reorderPct}% of reorder (&lt;10%)
-                                </div>
-                              </div>
-                            ) : belowMin ? (
-                              <div>
-                                <span className="text-amber-700 font-semibold">Below Reorder</span>
-                                <div className="text-[11px] font-mono tabular-nums text-amber-700/80">
-                                  {reorderPct}% of reorder
-                                </div>
-                              </div>
-                            ) : (
-                              <div>
-                                <span className="text-emerald-700 font-medium">Healthy</span>
-                                <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/55">
-                                  {reorderPct}% of reorder
-                                </div>
-                              </div>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 text-right font-mono tabular-nums">
-                            {formatUGX(item.purchasePrice)}
-                          </td>
-                          <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-[#E83B84]">
-                            {item.isRetail ? formatUGX(item.sellingPrice) : 'Internal Use'}
-                          </td>
-                          <td className="py-3 px-3">{item.isRetail ? 'Retail + Salon' : 'Salon Supply'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
+            <div className="space-y-6">
+              {(inventoryPartFilter === 'all' || inventoryPartFilter === 'salon_owned') &&
+                renderInventorySection('salon_owned', visibleSalonOwned)}
+              {(inventoryPartFilter === 'all' || inventoryPartFilter === 'for_sale') &&
+                renderInventorySection('for_sale', visibleForSale)}
             </div>
           </>
         )}
@@ -857,19 +1172,61 @@ export const ExpensesInventoryView: React.FC<{
         )}
       </div>
 
-      {/* Add Stock Modal */}
+      {/* Add / Edit Stock Modal */}
       {showStockModal && (
         <div className="fixed inset-0 z-50 bg-[#1D1717]/45 flex items-center justify-center p-4">
           <form
-            onSubmit={handleAddStock}
+            onSubmit={handleSaveStock}
             className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 p-6 space-y-3 text-xs"
           >
-            <h3 className="text-base font-bold">Register Inventory Item</h3>
+            <h3 className="text-base font-bold">
+              {editingStockItem ? 'Edit Inventory Item' : 'Register Inventory Item'}
+            </h3>
+            <div>
+              <label className="block font-semibold mb-1.5">Inventory Part *</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStkGroup('salon_owned');
+                    setStkSell(0);
+                  }}
+                  className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border font-semibold cursor-pointer ${
+                    stkGroup === 'salon_owned'
+                      ? 'border-[#1D1717] bg-[#1D1717] text-white'
+                      : 'border-[#1D1717]/15 bg-[#F8EEEB]/50 text-[#1D1717]'
+                  }`}
+                >
+                  <Briefcase className="w-3.5 h-3.5" />
+                  <span>Owned by Salon</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStkGroup('for_sale');
+                    if (stkSell === 0) setStkSell(20000);
+                  }}
+                  className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border font-semibold cursor-pointer ${
+                    stkGroup === 'for_sale'
+                      ? 'border-[#E83B84] bg-[#E83B84] text-white'
+                      : 'border-[#1D1717]/15 bg-[#F8EEEB]/50 text-[#1D1717]'
+                  }`}
+                >
+                  <ShoppingBag className="w-3.5 h-3.5" />
+                  <span>Item for Sale</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-[#1D1717]/60 mt-1">
+                {stkGroup === 'for_sale'
+                  ? 'Retail product — appears in POS checkout for client purchase.'
+                  : 'Owned by salon — internal supplies, backbar, or equipment (not sold in POS).'}
+              </p>
+            </div>
             <input
               required
               value={stkName}
               onChange={(e) => setStkName(e.target.value)}
-              placeholder="Product Name *"
+              placeholder="Product / Item Name *"
               className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
             />
             <div className="grid grid-cols-2 gap-2">
@@ -887,17 +1244,19 @@ export const ExpensesInventoryView: React.FC<{
                 className="px-3 py-2 rounded-xl border border-[#1D1717]/15"
               />
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label className="block font-semibold mb-1">Opening Qty</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={stkOpenQty}
-                  onChange={(e) => setStkOpenQty(Number(e.target.value))}
-                  className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                />
-              </div>
+            <div className={`grid ${editingStockItem ? 'grid-cols-2' : 'grid-cols-3'} gap-2`}>
+              {!editingStockItem && (
+                <div>
+                  <label className="block font-semibold mb-1">Opening Qty</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={stkOpenQty}
+                    onChange={(e) => setStkOpenQty(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block font-semibold mb-1">Reorder Level</label>
                 <input
@@ -933,25 +1292,20 @@ export const ExpensesInventoryView: React.FC<{
                 <input
                   type="number"
                   min={0}
-                  disabled={!stkRetail}
-                  value={stkSell}
+                  disabled={stkGroup !== 'for_sale'}
+                  value={stkGroup === 'for_sale' ? stkSell : 0}
                   onChange={(e) => setStkSell(Number(e.target.value))}
                   className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono disabled:opacity-45"
                 />
               </div>
             </div>
-            <label className="flex items-center gap-2 font-semibold cursor-pointer">
-              <input
-                type="checkbox"
-                checked={stkRetail}
-                onChange={(e) => setStkRetail(e.target.checked)}
-              />
-              <span>Available for Retail Sale in POS</span>
-            </label>
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setShowStockModal(false)}
+                onClick={() => {
+                  setShowStockModal(false);
+                  setEditingStockItem(null);
+                }}
                 className="px-4 py-2 rounded-xl border border-[#1D1717]/15 font-semibold cursor-pointer"
               >
                 Cancel
@@ -960,12 +1314,30 @@ export const ExpensesInventoryView: React.FC<{
                 type="submit"
                 className="px-4 py-2 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer"
               >
-                Save Stock Item
+                {editingStockItem ? 'Update Stock Item' : 'Save Stock Item'}
               </button>
             </div>
           </form>
         </div>
       )}
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Delete Stock Item"
+        description={
+          deleteTarget
+            ? `Delete "${deleteTarget.name}" (${deleteTarget.sku}) from ${
+                getItemGroup(deleteTarget) === 'for_sale' ? 'Items for Sale' : 'Owned by Salon'
+              }? Current quantity on hand: ${deleteTarget.currentQuantity} ${deleteTarget.unit}. This permanently removes the stock item from inventory.`
+            : ''
+        }
+        confirmLabel={deletingStockId ? 'Deleting...' : 'Delete Stock Item'}
+        destructive
+        onConfirm={() => void handleDeleteStock()}
+        onCancel={() => {
+          if (!deletingStockId) setDeleteTarget(null);
+        }}
+      />
 
       {/* Stock Movement Modal */}
       {showMoveModal && (

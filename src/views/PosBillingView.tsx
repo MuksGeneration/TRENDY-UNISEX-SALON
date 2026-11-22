@@ -117,7 +117,13 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
       const activeSrvs = srvRes.services.filter((s) => s.active);
       const activeEmps = empRes.employees.filter((e) => e.active);
       setServices(activeSrvs);
-      setProducts(invRes.items.filter((i) => i.active && i.isRetail));
+      setProducts(
+        invRes.items.filter(
+          (i) =>
+            i.active !== false &&
+            (i.inventoryGroup === 'for_sale' || (i.inventoryGroup !== 'salon_owned' && i.isRetail))
+        )
+      );
       setEmployees(activeEmps);
       setCustomers(custRes.customers);
       setTransactions(txRes.transactions);
