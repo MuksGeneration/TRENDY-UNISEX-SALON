@@ -9,6 +9,8 @@ export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const [isInIframe, setIsInIframe] = useState(false);
 
   useEffect(() => {
@@ -18,7 +20,11 @@ export function usePWAInstall() {
     setIsInstalled(isStandalone);
 
     const userAgent = window.navigator.userAgent.toLowerCase();
-    setIsIOS(/iphone|ipad|ipod/.test(userAgent));
+    const ios = /iphone|ipad|ipod/.test(userAgent);
+    const android = /android/.test(userAgent);
+    setIsIOS(ios);
+    setIsAndroid(android);
+    setIsDesktop(!ios && !android);
 
     try {
       setIsInIframe(window.self !== window.top);
@@ -61,6 +67,8 @@ export function usePWAInstall() {
     isInstallable: Boolean(deferredPrompt),
     isInstalled,
     isIOS,
+    isAndroid,
+    isDesktop,
     isInIframe,
     install,
   };

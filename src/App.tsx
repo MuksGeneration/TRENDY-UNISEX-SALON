@@ -2,31 +2,58 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import React, { useEffect, useState } from 'react';
-import { apiFetch, setSalonSessionToken } from './lib/api';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { apiFetch, getSalonSessionToken, setSalonSessionToken } from './lib/api';
 import {
   connectGoogleWorkspace,
   disconnectGoogleWorkspace,
   getGoogleAccessToken,
   initGoogleWorkspaceAuth,
 } from './lib/firebaseAuth';
-import { LoginView } from './components/LoginView';
 import { SidebarLayout } from './components/SidebarLayout';
-import { OfflineIndicator } from './components/PWAInstallButton';
-import { DashboardView } from './views/DashboardView';
-import { AppointmentsView } from './views/AppointmentsView';
-import { PosBillingView } from './views/PosBillingView';
-import { CustomersView } from './views/CustomersView';
-import { EmployeesSchedulingView } from './views/EmployeesSchedulingView';
-import { ServicesView } from './views/ServicesView';
-import { CommissionsView } from './views/CommissionsView';
-import { ExpensesInventoryView } from './views/ExpensesInventoryView';
-import { GiftCardsView } from './views/GiftCardsView';
-import { ReportsView } from './views/ReportsView';
-import { AiAssistantView } from './views/AiAssistantView';
-import { AdminViews } from './views/AdminViews';
-import { ClientBookingView } from './views/ClientBookingView';
+import { OfflineIndicator, PWAInstallPromptBanner } from './components/PWAInstallButton';
 import type { NavSection, SalonBranding, SessionUser } from './types';
+
+import { LoginView } from './components/LoginView';
+const DashboardView = lazy(() =>
+  import('./views/DashboardView').then((m) => ({ default: m.DashboardView }))
+);
+const AppointmentsView = lazy(() =>
+  import('./views/AppointmentsView').then((m) => ({ default: m.AppointmentsView }))
+);
+const PosBillingView = lazy(() =>
+  import('./views/PosBillingView').then((m) => ({ default: m.PosBillingView }))
+);
+const CustomersView = lazy(() =>
+  import('./views/CustomersView').then((m) => ({ default: m.CustomersView }))
+);
+const EmployeesSchedulingView = lazy(() =>
+  import('./views/EmployeesSchedulingView').then((m) => ({ default: m.EmployeesSchedulingView }))
+);
+const ServicesView = lazy(() =>
+  import('./views/ServicesView').then((m) => ({ default: m.ServicesView }))
+);
+const CommissionsView = lazy(() =>
+  import('./views/CommissionsView').then((m) => ({ default: m.CommissionsView }))
+);
+const ExpensesInventoryView = lazy(() =>
+  import('./views/ExpensesInventoryView').then((m) => ({ default: m.ExpensesInventoryView }))
+);
+const GiftCardsView = lazy(() =>
+  import('./views/GiftCardsView').then((m) => ({ default: m.GiftCardsView }))
+);
+const ReportsView = lazy(() =>
+  import('./views/ReportsView').then((m) => ({ default: m.ReportsView }))
+);
+const AiAssistantView = lazy(() =>
+  import('./views/AiAssistantView').then((m) => ({ default: m.AiAssistantView }))
+);
+const AdminViews = lazy(() =>
+  import('./views/AdminViews').then((m) => ({ default: m.AdminViews }))
+);
+const ClientBookingView = lazy(() =>
+  import('./views/ClientBookingView').then((m) => ({ default: m.ClientBookingView }))
+);
 
 const DEFAULT_BRANDING: SalonBranding = {
   businessName: 'Trendy Unisex Salon',
@@ -38,9 +65,28 @@ const DEFAULT_BRANDING: SalonBranding = {
   socialPlatforms: ['TikTok', 'Instagram', 'Facebook'],
   walkInsWelcome: true,
   promotionalBannerUrl: '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
-  backgroundImageUrl: '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
+  backgroundImageUrl:
+    '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
   salonLogoUrl: '',
 };
+
+const ViewLoader: React.FC<{ fullScreen?: boolean; label?: string }> = ({
+  fullScreen = false,
+  label = 'Loading content...',
+}) => (
+  <div
+    className={
+      fullScreen
+        ? 'min-h-screen bg-[#F8EEEB] flex items-center justify-center p-6'
+        : 'min-h-[45vh] flex items-center justify-center p-6'
+    }
+  >
+    <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-white border border-[#1D1717]/10 shadow-xs text-xs font-semibold text-[#1D1717]/75">
+      <span className="w-3.5 h-3.5 rounded-full border-2 border-[#E83B84] border-t-transparent animate-spin" />
+      <span>{label}</span>
+    </div>
+  </div>
+);
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -96,7 +142,7 @@ class AppErrorBoundary extends React.Component<
 
 export default function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
-  const [checkingSession, setCheckingSession] = useState(true);
+  const [checkingSession, setCheckingSession] = useState(() => Boolean(getSalonSessionToken()));
   const [showClientBooking, setShowClientBooking] = useState(() => {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
@@ -168,7 +214,7 @@ export default function App() {
         const res = await apiFetch<{ user: SessionUser }>('/api/auth/me');
         setUser(res.user);
         setGoogleConnected(Boolean(getGoogleAccessToken()));
-        await refreshNotifications();
+        void refreshNotifications();
       } catch {
         setUser(null);
       } finally {
@@ -220,35 +266,41 @@ export default function App() {
   };
 
   if (checkingSession) {
-    return (
-      <div className="min-h-screen bg-[#F8EEEB] flex items-center justify-center">
-        <div className="text-sm font-semibold text-[#1D1717]/70">
-          Loading Trendy Unisex Salon...
-        </div>
-      </div>
-    );
+    return <ViewLoader fullScreen label="Loading Trendy Unisex Salon..." />;
   }
 
   if (!user) {
     if (showClientBooking) {
       return (
-        <ClientBookingView
-          standalone
-          branding={branding}
-          onBackToLogin={() => {
-            setShowClientBooking(false);
-            if (typeof window !== 'undefined' && window.location.search) {
-              const url = new URL(window.location.href);
-              url.searchParams.delete('view');
-              url.searchParams.delete('book');
-              window.history.replaceState({}, '', url.toString());
-            }
-          }}
-        />
+        <AppErrorBoundary
+          onReset={() => setShowClientBooking(false)}
+          onSignOut={() => setShowClientBooking(false)}
+        >
+          <Suspense fallback={<ViewLoader fullScreen label="Loading booking portal..." />}>
+            <ClientBookingView
+              standalone
+              branding={branding}
+              onBackToLogin={() => {
+                setShowClientBooking(false);
+                if (typeof window !== 'undefined' && window.location.search) {
+                  const url = new URL(window.location.href);
+                  url.searchParams.delete('view');
+                  url.searchParams.delete('book');
+                  window.history.replaceState({}, '', url.toString());
+                }
+              }}
+            />
+          </Suspense>
+          <PWAInstallPromptBanner />
+          <OfflineIndicator />
+        </AppErrorBoundary>
       );
     }
     return (
-      <>
+      <AppErrorBoundary
+        onReset={() => window.location.reload()}
+        onSignOut={() => void handleLogout()}
+      >
         <LoginView
           branding={branding}
           onOpenClientBooking={() => setShowClientBooking(true)}
@@ -260,8 +312,9 @@ export default function App() {
             void refreshNotifications();
           }}
         />
+        <PWAInstallPromptBanner />
         <OfflineIndicator />
-      </>
+      </AppErrorBoundary>
     );
   }
 
@@ -296,66 +349,69 @@ export default function App() {
         onReset={() => setActiveSection('dashboard')}
         onSignOut={() => void handleLogout()}
       >
-        {activeSection === 'dashboard' && (
-          <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
-        )}
-        {activeSection === 'appointments' && (
-          <AppointmentsView
-            user={user}
-            branding={branding}
-            onCheckoutAppointment={(payload) => {
-              setPosPrefill(payload);
-              setActiveSection('pos');
-            }}
-          />
-        )}
-        {activeSection === 'pos' && (
-          <PosBillingView
-            user={user}
-            branding={branding}
-            prefill={posPrefill}
-            onClearPrefill={() => setPosPrefill(null)}
-          />
-        )}
-        {activeSection === 'customers' && <CustomersView user={user} />}
-        {(activeSection === 'employees' ||
-          activeSection === 'scheduling' ||
-          activeSection === 'attendance') && (
-          <EmployeesSchedulingView
-            mode={activeSection}
-            user={user}
-            googleConnected={effectiveWorkspaceConnected}
-            onConnectGoogle={handleHeaderWorkspaceAction}
-            onProfileSaved={() => void refreshCurrentUser()}
-          />
-        )}
-        {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
-        {(activeSection === 'commissions' ||
-          activeSection === 'payments' ||
-          activeSection === 'lunch') && (
-          <CommissionsView mode={activeSection} user={user} />
-        )}
-        {(activeSection === 'expenses' || activeSection === 'inventory') && (
-          <ExpensesInventoryView mode={activeSection} user={user} />
-        )}
-        {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
-        {activeSection === 'reports' && <ReportsView user={user} />}
-        {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
-        {(activeSection === 'notifications' ||
-          activeSection === 'users' ||
-          activeSection === 'settings' ||
-          activeSection === 'audit-logs') && (
-          <AdminViews
-            mode={activeSection}
-            user={user}
-            googleConnected={googleConnected}
-            onConnectGoogle={handleConnectGoogle}
-            onRefreshNotifications={() => void refreshNotifications()}
-            onBrandingUpdated={() => void refreshBranding()}
-            onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
-          />
-        )}
+        <Suspense fallback={<ViewLoader label="Loading section..." />}>
+          {activeSection === 'dashboard' && (
+            <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
+          )}
+          {activeSection === 'appointments' && (
+            <AppointmentsView
+              user={user}
+              branding={branding}
+              onCheckoutAppointment={(payload) => {
+                setPosPrefill(payload);
+                setActiveSection('pos');
+              }}
+            />
+          )}
+          {activeSection === 'pos' && (
+            <PosBillingView
+              user={user}
+              branding={branding}
+              prefill={posPrefill}
+              onClearPrefill={() => setPosPrefill(null)}
+            />
+          )}
+          {activeSection === 'customers' && <CustomersView user={user} />}
+          {(activeSection === 'employees' ||
+            activeSection === 'scheduling' ||
+            activeSection === 'attendance') && (
+            <EmployeesSchedulingView
+              mode={activeSection}
+              user={user}
+              googleConnected={effectiveWorkspaceConnected}
+              onConnectGoogle={handleHeaderWorkspaceAction}
+              onProfileSaved={() => void refreshCurrentUser()}
+            />
+          )}
+          {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
+          {(activeSection === 'commissions' ||
+            activeSection === 'payments' ||
+            activeSection === 'lunch') && (
+            <CommissionsView mode={activeSection} user={user} />
+          )}
+          {(activeSection === 'expenses' || activeSection === 'inventory') && (
+            <ExpensesInventoryView mode={activeSection} user={user} />
+          )}
+          {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
+          {activeSection === 'reports' && <ReportsView user={user} />}
+          {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
+          {(activeSection === 'notifications' ||
+            activeSection === 'users' ||
+            activeSection === 'settings' ||
+            activeSection === 'audit-logs') && (
+            <AdminViews
+              mode={activeSection}
+              user={user}
+              googleConnected={googleConnected}
+              onConnectGoogle={handleConnectGoogle}
+              onRefreshNotifications={() => void refreshNotifications()}
+              onBrandingUpdated={() => void refreshBranding()}
+              onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
+            />
+          )}
+        </Suspense>
       </AppErrorBoundary>
+      <PWAInstallPromptBanner />
       <OfflineIndicator />
     </SidebarLayout>
   );

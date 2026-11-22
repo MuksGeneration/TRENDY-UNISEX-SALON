@@ -1,45 +1,82 @@
-import { initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-  type User as FirebaseUser,
-} from 'firebase/auth';
+import type { Auth, GoogleAuthProvider as GoogleAuthProviderType, User as FirebaseUser } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 
 export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.file',
 ];
 
-const provider = new GoogleAuthProvider();
-for (const scope of WORKSPACE_SCOPES) {
-  provider.addScope(scope);
-}
-
 // Strictly in-memory OAuth access token cache (never stored in localStorage/sessionStorage)
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 let cachedGoogleUser: FirebaseUser | null = null;
 
+interface FirebaseAuthBundle {
+  auth: Auth;
+  provider: GoogleAuthProviderType;
+  signInWithPopup: typeof import('firebase/auth').signInWithPopup;
+  GoogleAuthProvider: typeof import('firebase/auth').GoogleAuthProvider;
+  onAuthStateChanged: typeof import('firebase/auth').onAuthStateChanged;
+}
+
+let firebaseBundlePromise: Promise<FirebaseAuthBundle> | null = null;
+
+async function getFirebaseAuthBundle(): Promise<FirebaseAuthBundle> {
+  if (!firebaseBundlePromise) {
+    firebaseBundlePromise = (async () => {
+      const [{ initializeApp, getApps }, authMod] = await Promise.all([
+        import('firebase/app'),
+        import('firebase/auth'),
+      ]);
+      const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+      const auth = authMod.getAuth(app);
+      const provider = new authMod.GoogleAuthProvider();
+      for (const scope of WORKSPACE_SCOPES) {
+        provider.addScope(scope);
+      }
+      return {
+        auth,
+        provider,
+        signInWithPopup: authMod.signInWithPopup,
+        GoogleAuthProvider: authMod.GoogleAuthProvider,
+        onAuthStateChanged: authMod.onAuthStateChanged,
+      };
+    })();
+  }
+  return firebaseBundlePromise;
+}
+
 export function initGoogleWorkspaceAuth(
   onConnected?: (user: FirebaseUser, token: string) => void,
   onDisconnected?: () => void
 ) {
-  return onAuthStateChanged(auth, (user) => {
-    if (user && cachedAccessToken) {
-      cachedGoogleUser = user;
-      onConnected?.(user, cachedAccessToken);
-    } else if (!isSigningIn) {
-      cachedAccessToken = null;
-      cachedGoogleUser = null;
-      onDisconnected?.();
-    }
-  });
+  let cancelled = false;
+  let unsubscribe: (() => void) | null = null;
+
+  if (firebaseBundlePromise) {
+    void getFirebaseAuthBundle()
+      .then(({ auth, onAuthStateChanged }) => {
+        if (cancelled) return;
+        unsubscribe = onAuthStateChanged(auth, (user) => {
+          if (user && cachedAccessToken) {
+            cachedGoogleUser = user;
+            onConnected?.(user, cachedAccessToken);
+          } else if (!isSigningIn) {
+            cachedAccessToken = null;
+            cachedGoogleUser = null;
+            onDisconnected?.();
+          }
+        });
+      })
+      .catch(() => {
+        // Non-fatal if auth listener cannot attach
+      });
+  }
+
+  return () => {
+    cancelled = true;
+    unsubscribe?.();
+  };
 }
 
 export async function connectGoogleWorkspace(): Promise<{
@@ -48,6 +85,7 @@ export async function connectGoogleWorkspace(): Promise<{
 }> {
   try {
     isSigningIn = true;
+    const { auth, provider, signInWithPopup, GoogleAuthProvider } = await getFirebaseAuthBundle();
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
@@ -90,7 +128,14 @@ export function getGoogleUser(): FirebaseUser | null {
 }
 
 export async function disconnectGoogleWorkspace(): Promise<void> {
-  await auth.signOut();
+  if (firebaseBundlePromise) {
+    try {
+      const { auth } = await getFirebaseAuthBundle();
+      await auth.signOut();
+    } catch {
+      // Ignore sign-out errors if Firebase was not initialized
+    }
+  }
   cachedAccessToken = null;
   cachedGoogleUser = null;
 }

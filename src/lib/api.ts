@@ -1,6 +1,3 @@
-import * as XLSX from 'xlsx';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { getGoogleAccessToken } from './firebaseAuth';
 import type { POSTransactionRecord, SalonBranding } from '../types';
 
@@ -117,10 +114,11 @@ export function formatUGX(amount: number | null | undefined): string {
   return `UGX ${Math.round(n).toLocaleString('en-UG')}`;
 }
 
-export function exportRowsToExcel(
+export async function exportRowsToExcel(
   fileName: string,
   sheets: Array<{ name: string; rows: Record<string, unknown>[] }>
 ) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
   for (const sheet of sheets) {
     const ws = XLSX.utils.json_to_sheet(sheet.rows.length > 0 ? sheet.rows : [{ Info: 'No records' }]);
@@ -129,13 +127,17 @@ export function exportRowsToExcel(
   XLSX.writeFile(wb, fileName.endsWith('.xlsx') ? fileName : `${fileName}.xlsx`);
 }
 
-export function exportReportToPdf(
+export async function exportReportToPdf(
   title: string,
   subtitle: string,
   columns: string[],
   rows: (string | number)[][],
   summaryLines: string[] = []
 ) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
   const doc = new jsPDF({ orientation: columns.length > 6 ? 'landscape' : 'portrait' });
   // Official Trendy Unisex Salon Brand Header
   doc.setFillColor(232, 59, 132); // #E83B84
@@ -185,7 +187,8 @@ export function exportReportToPdf(
   doc.save(`${title.toLowerCase().replace(/[^a-z0-9]+/g, '_')}.pdf`);
 }
 
-export function downloadReceiptPdf(tx: POSTransactionRecord, branding?: SalonBranding) {
+export async function downloadReceiptPdf(tx: POSTransactionRecord, branding?: SalonBranding) {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({ format: [80, 198], unit: 'mm' });
   const businessName = (branding?.businessName || 'Trendy Unisex Salon').toUpperCase();
   const tagline = branding?.tagline || 'Where Beauty Meets Style';
