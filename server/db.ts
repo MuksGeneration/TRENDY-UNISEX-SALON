@@ -604,7 +604,10 @@ export async function ensureCloudDbHydrated(): Promise<void> {
 
   if (dbDirty) return;
 
-  const ttlMs = IS_SERVERLESS ? 60_000 : 300_000;
+  // Short 2s window only coalesces concurrent parallel GETs within a single page render burst
+  // (flushCloudDbSync also updates lastCloudHydratedAt right after writes). Any refresh >2s later
+  // pulls live state from Google Sheets so changes appear right away.
+  const ttlMs = 2_000;
   if (cloudHydratedOnce && lastCloudHydratedAt > 0 && Date.now() - lastCloudHydratedAt < ttlMs) {
     return;
   }
@@ -752,15 +755,8 @@ export async function ensureCloudDbHydrated(): Promise<void> {
     return cloudHydrationPromise;
   };
 
-  // If this instance has already hydrated once, refresh asynchronously in the background
-  // so API reads return immediately without blocking.
-  if (cloudHydratedOnce && lastCloudHydratedAt > 0) {
-    void startHydration();
-    return;
-  }
-
-  // On initial cold start, allow up to 12s for Google Apps Script cold-start reads
-  // so fresh serverless containers load real sheet state before auth/queries run.
+  // Always wait (up to 12s) for cloud hydration when the coalescing window has expired so
+  // refreshes and cross-device edits immediately reflect the latest cloud state.
   await Promise.race([
     startHydration(),
     new Promise<void>((resolve) => setTimeout(resolve, 12_000)),

@@ -62,7 +62,21 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-registerSW({immediate: true});
+if (typeof window !== 'undefined' && 'caches' in window) {
+  void window.caches
+    .keys()
+    .then((keys) => Promise.all(keys.map((key) => window.caches.delete(key))))
+    .catch(() => {});
+}
+
+registerSW({
+  immediate: true,
+  onRegisteredSW(_swUrl, registration) {
+    if (registration) {
+      void registration.update().catch(() => {});
+    }
+  },
+});
 
 createRoot(document.getElementById('root')!).render(
   <RootErrorBoundary>

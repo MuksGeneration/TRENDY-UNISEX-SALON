@@ -34,6 +34,7 @@ function attachCloudSyncMetadata(body: unknown, syncResult: CloudSyncResult): un
 export function createExpressApp(): express.Express {
   const app = express();
   app.set('trust proxy', 1);
+  app.set('etag', false);
   app.use(express.json({ limit: '15mb' }));
 
   // Ensure initial DB exists in memory / local or /tmp cache
@@ -41,6 +42,11 @@ export function createExpressApp(): express.Express {
 
   // Cold-start hydration & automatic write-through sync to Google Sheets
   app.use('/api', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+
     try {
       await ensureCloudDbHydrated();
     } catch (err) {

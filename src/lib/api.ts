@@ -50,6 +50,7 @@ export async function apiFetch<T = unknown>(
     ...options,
     headers: buildHeaders(),
     credentials: 'include',
+    cache: 'no-store',
   });
 
   const method = (options.method || 'GET').toUpperCase();
@@ -59,6 +60,7 @@ export async function apiFetch<T = unknown>(
       ...options,
       headers: buildHeaders(),
       credentials: 'include',
+      cache: 'no-store',
     });
   }
 
@@ -101,6 +103,7 @@ export async function fetchDriveMediaBlobUrl(
   const res = await fetch(`/api/workspace/drive/media/${encodeURIComponent(fileId)}`, {
     headers,
     credentials: 'include',
+    cache: 'no-store',
   });
 
   if (!res.ok) {

@@ -37,7 +37,11 @@ async function startServer() {
           res
             .status(200)
             .type('application/javascript')
-            .set('Cache-Control', 'no-cache')
+            .set({
+              'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+              Pragma: 'no-cache',
+              Expires: '0',
+            })
             .send(patched);
         } catch (err) {
           next(err);
@@ -48,8 +52,21 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        etag: false,
+        lastModified: false,
+        setHeaders: (res) => {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        },
+      })
+    );
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
