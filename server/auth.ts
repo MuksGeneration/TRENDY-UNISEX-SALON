@@ -1,7 +1,14 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { User, UserRole } from './types.ts';
-import { appendAuditLog, readDb, recordSessionEvent, writeDb } from './db.ts';
+import {
+  appendAuditLog,
+  isCloudHydratedOnce,
+  isCloudSyncConfigured,
+  readDb,
+  recordSessionEvent,
+  writeDb,
+} from './db.ts';
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
@@ -184,6 +191,13 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   // Verify user still exists and is active in DB
   const user = db.users.find((u) => u.id === payload.userId);
+  if (!user && !isCloudHydratedOnce() && isCloudSyncConfigured(db)) {
+    res.setHeader('Retry-After', '2');
+    res.status(503).json({
+      error: 'Salon records are still loading from cloud storage. Please retry in a moment.',
+    });
+    return;
+  }
   if (!user || !user.active) {
     const { ipAddress, userAgent } = getClientContext(req);
     recordSessionEvent(db, {

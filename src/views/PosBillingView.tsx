@@ -8,6 +8,8 @@ import {
   RotateCcw,
   CreditCard,
   CheckCircle2,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { apiFetch, downloadReceiptPdf, formatUGX } from '../lib/api';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -88,6 +90,8 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
 
   const [lastReceipt, setLastReceipt] = useState<POSTransactionRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [retryingSync, setRetryingSync] = useState(false);
+  const [syncWarning, setSyncWarning] = useState('');
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -212,10 +216,46 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
     });
   };
 
+  const handleCloudSyncFeedback = (
+    cloudSync?: { synced?: boolean; configured?: boolean; error?: string },
+    syncedLabel?: string,
+    localOnlyLabel?: string
+  ) => {
+    if (cloudSync?.configured) {
+      if (cloudSync.synced) {
+        setSyncWarning('');
+        return `${syncedLabel || 'Saved & synced to Google Sheets!'}`;
+      }
+      setSyncWarning(
+        cloudSync.error ||
+          'Google Sheets sync did not finish for this sale. Click Retry Sync Now to push it to Google Sheets.'
+      );
+      return `${localOnlyLabel || 'Saved locally (Google Sheets sync pending).'} `;
+    }
+    setSyncWarning('');
+    return localOnlyLabel || syncedLabel || 'Saved!';
+  };
+
+  const handleRetrySync = async () => {
+    setRetryingSync(true);
+    setError('');
+    try {
+      await apiFetch('/api/workspace/sheets/sync', { method: 'POST' });
+      setSyncWarning('');
+      setSuccessMsg('Pending POS transactions synced to Google Sheets successfully.');
+      await loadData();
+    } catch (err) {
+      setSyncWarning(err instanceof Error ? err.message : 'Google Sheets sync retry failed.');
+    } finally {
+      setRetryingSync(false);
+    }
+  };
+
   const handleCompleteSale = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
+    setSyncWarning('');
     if (cart.length === 0) {
       setError('Add at least one service or retail product to checkout.');
       return;
@@ -223,7 +263,10 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
 
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ transaction: POSTransactionRecord }>('/api/pos/transactions', {
+      const res = await apiFetch<{
+        transaction: POSTransactionRecord;
+        cloudSync?: { synced?: boolean; configured?: boolean; error?: string };
+      }>('/api/pos/transactions', {
         method: 'POST',
         body: JSON.stringify({
           date: txDate,
@@ -255,7 +298,11 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
       setPayments([{ method: 'Cash', amount: 0, reference: '', giftCardCode: '' }]);
       onClearPrefill?.();
       setSuccessMsg(
-        `Transaction ${res.transaction.reference} saved! Commissions, lunch deduction, and inventory updated.`
+        handleCloudSyncFeedback(
+          res.cloudSync,
+          `Transaction ${res.transaction.reference} saved & synced to Google Sheets! Commissions, lunch deduction, and inventory updated.`,
+          `Transaction ${res.transaction.reference} saved! Commissions, lunch deduction, and inventory updated.`
+        )
       );
       await loadData();
     } catch (err) {
@@ -269,8 +316,11 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
     e.preventDefault();
     if (!payingTx) return;
     setError('');
+    setSyncWarning('');
     try {
-      await apiFetch(`/api/pos/transactions/${payingTx.id}/payment`, {
+      const res = await apiFetch<{
+        cloudSync?: { synced?: boolean; configured?: boolean; error?: string };
+      }>(`/api/pos/transactions/${payingTx.id}/payment`, {
         method: 'POST',
         body: JSON.stringify({
           method: followUpMethod,
@@ -279,7 +329,13 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
         }),
       });
       setPayingTx(null);
-      setSuccessMsg(`Recorded balance payment of ${formatUGX(followUpAmount)}.`);
+      setSuccessMsg(
+        handleCloudSyncFeedback(
+          res.cloudSync,
+          `Recorded balance payment of ${formatUGX(followUpAmount)} and synced to Google Sheets.`,
+          `Recorded balance payment of ${formatUGX(followUpAmount)}.`
+        )
+      );
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Payment failed.');
@@ -289,14 +345,23 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
   const handleConfirmReverse = async () => {
     if (!reverseTarget) return;
     setError('');
+    setSyncWarning('');
     try {
-      await apiFetch(`/api/pos/transactions/${reverseTarget.id}/reverse`, {
+      const res = await apiFetch<{
+        cloudSync?: { synced?: boolean; configured?: boolean; error?: string };
+      }>(`/api/pos/transactions/${reverseTarget.id}/reverse`, {
         method: 'POST',
         body: JSON.stringify({ reason: reverseReason || 'Authorized POS Reversal' }),
       });
       setReverseTarget(null);
       setReverseReason('');
-      setSuccessMsg('Transaction reversed and commissions/inventory recalculated.');
+      setSuccessMsg(
+        handleCloudSyncFeedback(
+          res.cloudSync,
+          'Transaction reversed, commissions/inventory recalculated, and synced to Google Sheets.',
+          'Transaction reversed and commissions/inventory recalculated.'
+        )
+      );
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Reversal failed.');
@@ -361,6 +426,25 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
       {error && (
         <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs font-medium">
           {error}
+        </div>
+      )}
+      {syncWarning && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs font-medium flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="leading-relaxed">
+              <strong>Google Sheets Sync Pending:</strong> {syncWarning}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={retryingSync}
+            onClick={() => void handleRetrySync()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1D1717] text-white text-xs font-semibold hover:bg-[#1D1717]/85 disabled:opacity-50 cursor-pointer shrink-0"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${retryingSync ? 'animate-spin' : ''}`} />
+            <span>{retryingSync ? 'Syncing...' : 'Retry Sync Now'}</span>
+          </button>
         </div>
       )}
       {successMsg && (

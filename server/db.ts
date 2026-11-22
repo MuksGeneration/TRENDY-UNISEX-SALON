@@ -434,11 +434,23 @@ function ensureDirectories(): void {
   }
 }
 
+export interface CloudSyncResult {
+  synced: boolean;
+  configured: boolean;
+  error?: string;
+  lastSheetsSyncAt?: string;
+}
+
 let cachedDb: SalonDatabase | null = null;
 let dbDirty = false;
+let dbMutationVersion = 0;
+let lastSyncedMutationVersion = 0;
+let cloudHydratedOnce = false;
 let lastCloudHydratedAt = 0;
+let lastCloudSyncError: string | null = null;
+const dirtyTabHintSet = new Set<string>();
 let cloudHydrationPromise: Promise<void> | null = null;
-let cloudSyncInFlight: Promise<{ synced: boolean; error?: string }> | null = null;
+let cloudSyncInFlight: Promise<CloudSyncResult> | null = null;
 
 function normalizeLoadedDb(db: SalonDatabase): boolean {
   let modified = false;
@@ -539,14 +551,36 @@ function writeDbLocalOnly(db: SalonDatabase): void {
 export function writeDb(db: SalonDatabase): void {
   writeDbLocalOnly(db);
   dbDirty = true;
+  dbMutationVersion += 1;
 }
 
 export function isDbDirtyForCloud(): boolean {
   return dbDirty;
 }
 
+export function isCloudHydratedOnce(): boolean {
+  return cloudHydratedOnce;
+}
+
+export function getLastCloudSyncError(): string | null {
+  return lastCloudSyncError;
+}
+
+export function isCloudSyncConfigured(db?: SalonDatabase): boolean {
+  const target = db || cachedDb || readDb();
+  const bridgeUrl = getAppsScriptBridgeUrl(target.settings?.googleAppsScriptUrl);
+  const spreadsheetId =
+    target.settings?.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
+  return Boolean(bridgeUrl || spreadsheetId);
+}
+
 export function markDbCleanFromCloudSync(): void {
   dbDirty = false;
+  lastSyncedMutationVersion = dbMutationVersion;
+  dirtyTabHintSet.clear();
+  lastCloudSyncError = null;
+  cloudHydratedOnce = true;
+  lastCloudHydratedAt = Date.now();
 }
 
 export async function ensureCloudDbHydrated(): Promise<void> {
@@ -554,13 +588,26 @@ export async function ensureCloudDbHydrated(): Promise<void> {
   const bridgeUrl = getAppsScriptBridgeUrl(currentDb.settings?.googleAppsScriptUrl);
   const spreadsheetId =
     currentDb.settings?.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
-  if (!bridgeUrl && !spreadsheetId) return;
-
-  const ttlMs = IS_SERVERLESS ? 60_000 : 300_000;
-  if (lastCloudHydratedAt > 0 && Date.now() - lastCloudHydratedAt < ttlMs) {
+  if (!bridgeUrl && !spreadsheetId) {
+    cloudHydratedOnce = true;
     return;
   }
+
+  // Wait for any active upload to finish before considering hydration from remote
+  if (cloudSyncInFlight) {
+    try {
+      await cloudSyncInFlight;
+    } catch {
+      // Handled inside flushCloudDbSync
+    }
+  }
+
   if (dbDirty) return;
+
+  const ttlMs = IS_SERVERLESS ? 60_000 : 300_000;
+  if (cloudHydratedOnce && lastCloudHydratedAt > 0 && Date.now() - lastCloudHydratedAt < ttlMs) {
+    return;
+  }
 
   const startHydration = () => {
     if (cloudHydrationPromise) {
@@ -568,6 +615,7 @@ export async function ensureCloudDbHydrated(): Promise<void> {
     }
 
     cloudHydrationPromise = (async () => {
+      const versionAtStart = dbMutationVersion;
       try {
         if (bridgeUrl) {
           const res = await readDatabaseViaAppsScript(bridgeUrl, spreadsheetId);
@@ -576,6 +624,11 @@ export async function ensureCloudDbHydrated(): Promise<void> {
               `Apps Script bridge returned spreadsheet ${res.spreadsheetId}, which does not match configured spreadsheet ${spreadsheetId}. Skipping hydration from mismatched sheet.`
             );
             lastCloudHydratedAt = Date.now();
+            cloudHydratedOnce = true;
+            return;
+          }
+          // Abort applying remote snapshot if a local mutation happened while reading
+          if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
             return;
           }
           if (res.db) {
@@ -592,6 +645,7 @@ export async function ensureCloudDbHydrated(): Promise<void> {
             }
             writeDbLocalOnly(res.db);
             dbDirty = false;
+            lastSyncedMutationVersion = dbMutationVersion;
           } else {
             const local = readDb();
             local.settings.googleAppsScriptUrl = bridgeUrl;
@@ -601,11 +655,15 @@ export async function ensureCloudDbHydrated(): Promise<void> {
             local.settings.lastSheetsSyncAt = new Date().toISOString();
 
             const wb = await readWorkbookViaAppsScript(bridgeUrl, spreadsheetId).catch(() => null);
+            if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
+              return;
+            }
             if (wb?.spreadsheetId && spreadsheetId && wb.spreadsheetId !== spreadsheetId) {
               console.warn(
                 `Apps Script bridge is bound to ${wb.spreadsheetId}, not ${spreadsheetId}. Update Code.gs in sheet ${spreadsheetId}.`
               );
               lastCloudHydratedAt = Date.now();
+              cloudHydratedOnce = true;
               return;
             }
             const hasLegacyRows = Boolean(
@@ -623,18 +681,32 @@ export async function ensureCloudDbHydrated(): Promise<void> {
                 spreadsheetId || synced.spreadsheetId || local.settings.googleSpreadsheetId;
               local.settings.googleSpreadsheetUrl = synced.spreadsheetUrl || local.settings.googleSpreadsheetUrl;
             }
+            if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
+              return;
+            }
             writeDbLocalOnly(local);
             dbDirty = false;
+            lastSyncedMutationVersion = dbMutationVersion;
           }
           lastCloudHydratedAt = Date.now();
+          cloudHydratedOnce = true;
           return;
         }
 
-        if (!spreadsheetId) return;
+        if (!spreadsheetId) {
+          cloudHydratedOnce = true;
+          return;
+        }
         const serverToken = await getServerGoogleAccessToken();
-        if (!serverToken) return;
+        if (!serverToken) {
+          cloudHydratedOnce = true;
+          return;
+        }
 
         const remoteDb = await readDatabaseFromGoogleSheet(serverToken, spreadsheetId);
+        if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
+          return;
+        }
         if (remoteDb) {
           normalizeLoadedDb(remoteDb);
           remoteDb.settings.googleSpreadsheetId = remoteDb.settings.googleSpreadsheetId || spreadsheetId;
@@ -643,12 +715,16 @@ export async function ensureCloudDbHydrated(): Promise<void> {
           }
           writeDbLocalOnly(remoteDb);
           dbDirty = false;
+          lastSyncedMutationVersion = dbMutationVersion;
         } else {
           const local = readDb();
           local.settings.googleSpreadsheetId = spreadsheetId;
           local.settings.lastSheetsSyncAt = new Date().toISOString();
 
           const wb = await readWorkbookFromGoogleSheet(serverToken, spreadsheetId).catch(() => null);
+          if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
+            return;
+          }
           const hasLegacyRows = Boolean(
             wb && wb.tabSummaries.some((t) => t.name !== '_SystemState' && t.rowCount > 0)
           );
@@ -657,10 +733,15 @@ export async function ensureCloudDbHydrated(): Promise<void> {
           } else {
             await syncDatabaseToGoogleSheet(serverToken, spreadsheetId, local);
           }
+          if (dbDirty || cloudSyncInFlight || dbMutationVersion !== versionAtStart) {
+            return;
+          }
           writeDbLocalOnly(local);
           dbDirty = false;
+          lastSyncedMutationVersion = dbMutationVersion;
         }
         lastCloudHydratedAt = Date.now();
+        cloudHydratedOnce = true;
       } catch (err) {
         console.warn('Cloud Google Sheets hydration warning:', err instanceof Error ? err.message : err);
       } finally {
@@ -671,77 +752,152 @@ export async function ensureCloudDbHydrated(): Promise<void> {
     return cloudHydrationPromise;
   };
 
-  // If this instance already has hydrated data in memory, refresh asynchronously in the background
-  // so page navigation and API reads return immediately.
-  if (lastCloudHydratedAt > 0) {
+  // If this instance has already hydrated once, refresh asynchronously in the background
+  // so API reads return immediately without blocking.
+  if (cloudHydratedOnce && lastCloudHydratedAt > 0) {
     void startHydration();
     return;
   }
 
-  // On initial cold start, cap blocking wait at 4.5s so slow Google endpoints never stall UI loading.
+  // On initial cold start, allow up to 12s for Google Apps Script cold-start reads
+  // so fresh serverless containers load real sheet state before auth/queries run.
   await Promise.race([
     startHydration(),
-    new Promise<void>((resolve) => setTimeout(resolve, 4500)),
+    new Promise<void>((resolve) => setTimeout(resolve, 12_000)),
   ]);
 }
 
 export async function flushCloudDbSync(
-  requestGoogleToken?: string
-): Promise<{ synced: boolean; error?: string }> {
-  if (!dbDirty) return { synced: false };
-
-  const db = readDb();
-  const bridgeUrl = getAppsScriptBridgeUrl(db.settings.googleAppsScriptUrl);
-  const spreadsheetId = db.settings.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
-  if (!bridgeUrl && !spreadsheetId) return { synced: false };
-
-  if (cloudSyncInFlight) {
-    return cloudSyncInFlight;
+  requestGoogleToken?: string,
+  onlyTabs?: string[]
+): Promise<CloudSyncResult> {
+  if (onlyTabs && onlyTabs.length > 0) {
+    for (const t of onlyTabs) dirtyTabHintSet.add(t);
+  } else if (dbDirty) {
+    dirtyTabHintSet.add('*');
   }
 
-  cloudSyncInFlight = (async () => {
+  const configured = isCloudSyncConfigured();
+  if (!dbDirty) {
+    return {
+      synced: false,
+      configured,
+      lastSheetsSyncAt: readDb().settings.lastSheetsSyncAt,
+    };
+  }
+
+  if (cloudSyncInFlight) {
+    const prev = await cloudSyncInFlight;
+    if (!dbDirty) return prev;
+  }
+
+  const startSyncLoop = async (): Promise<CloudSyncResult> => {
+    let attempts = 0;
+    let lastSyncedAt: string | undefined;
+
     try {
-      if (bridgeUrl) {
-        dbDirty = false;
-        db.settings.googleAppsScriptUrl = bridgeUrl;
-        db.settings.lastSheetsSyncAt = new Date().toISOString();
-        const result = await syncDatabaseViaAppsScript(bridgeUrl, db);
-        if (result.spreadsheetId && spreadsheetId && result.spreadsheetId !== spreadsheetId) {
-          throw new Error(
-            `Apps Script synced to ${result.spreadsheetId} instead of ${spreadsheetId}. Redeploy Code.gs inside Google Sheet ${spreadsheetId}.`
-          );
+      while (dbDirty && attempts < 3) {
+        attempts += 1;
+        const targetVersion = dbMutationVersion;
+        const liveNow = readDb();
+        const bridgeUrl = getAppsScriptBridgeUrl(liveNow.settings.googleAppsScriptUrl);
+        const spreadsheetId =
+          liveNow.settings.googleSpreadsheetId || process.env.GOOGLE_SPREADSHEET_ID?.trim();
+
+        if (!bridgeUrl && !spreadsheetId) {
+          return { synced: false, configured: false };
         }
-        if (result.spreadsheetId && !spreadsheetId) db.settings.googleSpreadsheetId = result.spreadsheetId;
-        if (result.spreadsheetUrl && !db.settings.googleSpreadsheetUrl) {
-          db.settings.googleSpreadsheetUrl = result.spreadsheetUrl;
+
+        const useFullMatrix = dirtyTabHintSet.has('*') || dirtyTabHintSet.size === 0;
+        const tabsForSync = useFullMatrix ? undefined : Array.from(dirtyTabHintSet);
+
+        const dbSnapshot = JSON.parse(JSON.stringify(liveNow)) as SalonDatabase;
+        const syncedAt = new Date().toISOString();
+        dbSnapshot.settings.lastSheetsSyncAt = syncedAt;
+
+        if (bridgeUrl) {
+          dbSnapshot.settings.googleAppsScriptUrl = bridgeUrl;
+          const result = await syncDatabaseViaAppsScript(bridgeUrl, dbSnapshot, tabsForSync);
+          if (result.spreadsheetId && spreadsheetId && result.spreadsheetId !== spreadsheetId) {
+            throw new Error(
+              `Apps Script synced to ${result.spreadsheetId} instead of ${spreadsheetId}. Redeploy Code.gs inside Google Sheet ${spreadsheetId}.`
+            );
+          }
+          const latestLive = readDb();
+          latestLive.settings.googleAppsScriptUrl = bridgeUrl;
+          latestLive.settings.lastSheetsSyncAt = syncedAt;
+          if (result.spreadsheetId && !latestLive.settings.googleSpreadsheetId) {
+            latestLive.settings.googleSpreadsheetId = result.spreadsheetId;
+          }
+          if (result.spreadsheetUrl && !latestLive.settings.googleSpreadsheetUrl) {
+            latestLive.settings.googleSpreadsheetUrl = result.spreadsheetUrl;
+          }
+          writeDbLocalOnly(latestLive);
+          lastSyncedAt = syncedAt;
+          lastCloudHydratedAt = Date.now();
+          cloudHydratedOnce = true;
+          lastCloudSyncError = null;
+
+          if (dbMutationVersion === targetVersion) {
+            dbDirty = false;
+            lastSyncedMutationVersion = targetVersion;
+            dirtyTabHintSet.clear();
+            return { synced: true, configured: true, lastSheetsSyncAt: syncedAt };
+          }
+          // Another local write happened while syncing; loop to push the newest state.
+          continue;
         }
-        writeDbLocalOnly(db);
+
+        if (!spreadsheetId) {
+          return { synced: false, configured: false };
+        }
+        const serverToken = await getServerGoogleAccessToken();
+        const token = serverToken || requestGoogleToken;
+        if (!token) {
+          return {
+            synced: false,
+            configured: true,
+            error:
+              'Google Sheets is linked by ID, but no active Google OAuth token or Apps Script URL was available to sync automatically.',
+          };
+        }
+
+        dbSnapshot.settings.googleSpreadsheetId = spreadsheetId;
+        await syncDatabaseToGoogleSheet(token, spreadsheetId, dbSnapshot, tabsForSync);
+        const latestLive = readDb();
+        latestLive.settings.googleSpreadsheetId = spreadsheetId;
+        latestLive.settings.lastSheetsSyncAt = syncedAt;
+        writeDbLocalOnly(latestLive);
+        lastSyncedAt = syncedAt;
         lastCloudHydratedAt = Date.now();
-        return { synced: true };
+        cloudHydratedOnce = true;
+        lastCloudSyncError = null;
+
+        if (dbMutationVersion === targetVersion) {
+          dbDirty = false;
+          lastSyncedMutationVersion = targetVersion;
+          dirtyTabHintSet.clear();
+          return { synced: true, configured: true, lastSheetsSyncAt: syncedAt };
+        }
       }
 
-      if (!spreadsheetId) return { synced: false };
-      const serverToken = await getServerGoogleAccessToken();
-      const token = serverToken || requestGoogleToken;
-      if (!token) return { synced: false };
-
-      dbDirty = false;
-      db.settings.googleSpreadsheetId = spreadsheetId;
-      db.settings.lastSheetsSyncAt = new Date().toISOString();
-      writeDbLocalOnly(db);
-      await syncDatabaseToGoogleSheet(token, spreadsheetId, db);
-      lastCloudHydratedAt = Date.now();
-      return { synced: true };
+      return {
+        synced: !dbDirty,
+        configured: isCloudSyncConfigured(),
+        lastSheetsSyncAt: lastSyncedAt || readDb().settings.lastSheetsSyncAt,
+      };
     } catch (err) {
       dbDirty = true;
       const msg = err instanceof Error ? err.message : 'Google Sheets cloud sync failed.';
+      lastCloudSyncError = msg;
       console.warn('Google Sheets auto-sync warning:', msg);
-      return { synced: false, error: msg };
+      return { synced: false, configured: true, error: msg };
     } finally {
       cloudSyncInFlight = null;
     }
-  })();
+  };
 
+  cloudSyncInFlight = startSyncLoop();
   return cloudSyncInFlight;
 }
 

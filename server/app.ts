@@ -4,15 +4,32 @@ import { createApiRouter } from './routes.ts';
 import {
   ensureCloudDbHydrated,
   flushCloudDbSync,
+  getLastCloudSyncError,
   IS_SERVERLESS,
+  isCloudHydratedOnce,
+  isCloudSyncConfigured,
   isDbDirtyForCloud,
   readDb,
+  type CloudSyncResult,
 } from './db.ts';
-import { getServerGoogleCredentialsStatus } from './workspaceService.ts';
+import {
+  getRelevantSheetTabsForApiPath,
+  getServerGoogleCredentialsStatus,
+} from './workspaceService.ts';
 
 dotenv.config();
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+function attachCloudSyncMetadata(body: unknown, syncResult: CloudSyncResult): unknown {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    return {
+      ...(body as Record<string, unknown>),
+      cloudSync: syncResult,
+    };
+  }
+  return body;
+}
 
 export function createExpressApp(): express.Express {
   const app = express();
@@ -35,19 +52,46 @@ export function createExpressApp(): express.Express {
       !req.path.startsWith('/workspace/sheets/')
     ) {
       const requestGoogleToken = req.headers['x-google-token']?.toString()?.trim();
+      const onlyTabs = getRelevantSheetTabsForApiPath(req.path);
+      const isAuthLifecycle = req.path.startsWith('/auth/');
       const origJson = res.json.bind(res);
       let flushed = false;
 
       res.json = ((body: unknown) => {
         if (!flushed && isDbDirtyForCloud()) {
           flushed = true;
-          if (IS_SERVERLESS || process.env.AUTO_SYNC_GOOGLE_SHEETS === 'true') {
-            void flushCloudDbSync(requestGoogleToken).finally(() => {
-              origJson(body);
-            });
+          const cloudConfigured = isCloudSyncConfigured();
+          // On Vercel/serverless or for all business mutations (POS, appointments, CRM, HR, etc.),
+          // await Google Sheets sync so a subsequent page refresh reads the saved record cleanly.
+          // Auth login/logout on persistent Node servers syncs in background to keep sign-in snappy.
+          const shouldAwaitSync =
+            IS_SERVERLESS ||
+            process.env.AUTO_SYNC_GOOGLE_SHEETS === 'true' ||
+            (cloudConfigured && !isAuthLifecycle);
+
+          if (shouldAwaitSync && (cloudConfigured || Boolean(requestGoogleToken))) {
+            void flushCloudDbSync(requestGoogleToken, onlyTabs)
+              .then((syncResult) => {
+                if (syncResult.configured) {
+                  res.setHeader(
+                    'X-Cloud-Sync-Status',
+                    syncResult.synced ? 'synced' : 'failed'
+                  );
+                }
+                origJson(attachCloudSyncMetadata(body, syncResult));
+              })
+              .catch((err) => {
+                const fallback: CloudSyncResult = {
+                  synced: false,
+                  configured: cloudConfigured,
+                  error: err instanceof Error ? err.message : 'Cloud sync failed.',
+                };
+                res.setHeader('X-Cloud-Sync-Status', 'failed');
+                origJson(attachCloudSyncMetadata(body, fallback));
+              });
             return res;
           }
-          void flushCloudDbSync(requestGoogleToken);
+          void flushCloudDbSync(requestGoogleToken, onlyTabs);
         }
         return origJson(body);
       }) as express.Response['json'];
@@ -77,6 +121,10 @@ export function createExpressApp(): express.Express {
           process.env.GOOGLE_DRIVE_FOLDER_ID?.trim()
       ),
       serverGoogleCredentials: serverCreds.mode,
+      cloudHydratedOnce: isCloudHydratedOnce(),
+      pendingCloudSync: isDbDirtyForCloud(),
+      lastSheetsSyncAt: db.settings.lastSheetsSyncAt || null,
+      lastCloudSyncError: getLastCloudSyncError(),
     });
   });
 

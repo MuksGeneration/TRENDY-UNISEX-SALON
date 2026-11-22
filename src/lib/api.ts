@@ -30,24 +30,37 @@ export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const headers = new Headers(options.headers || {});
-  if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const salonToken = getSalonSessionToken();
-  if (salonToken) {
-    headers.set('x-session-token', salonToken);
-  }
-  const googleToken = getGoogleAccessToken();
-  if (googleToken) {
-    headers.set('x-google-token', googleToken);
-  }
+  const buildHeaders = () => {
+    const headers = new Headers(options.headers || {});
+    if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json');
+    }
+    const salonToken = getSalonSessionToken();
+    if (salonToken) {
+      headers.set('x-session-token', salonToken);
+    }
+    const googleToken = getGoogleAccessToken();
+    if (googleToken) {
+      headers.set('x-google-token', googleToken);
+    }
+    return headers;
+  };
 
-  const res = await fetch(path, {
+  let res = await fetch(path, {
     ...options,
-    headers,
+    headers: buildHeaders(),
     credentials: 'include',
   });
+
+  const method = (options.method || 'GET').toUpperCase();
+  if (res.status === 503 && method === 'GET') {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    res = await fetch(path, {
+      ...options,
+      headers: buildHeaders(),
+      credentials: 'include',
+    });
+  }
 
   const text = await res.text();
   let data: Record<string, unknown> = {};

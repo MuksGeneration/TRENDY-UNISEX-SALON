@@ -188,8 +188,65 @@ function encodeSystemStateRows(db: SalonDatabase): (string | number | boolean)[]
   ];
 }
 
-export function buildSheetMatrix(db: SalonDatabase): Record<string, (string | number | boolean)[][]> {
-  return {
+export function getRelevantSheetTabsForApiPath(apiPath: string): string[] | undefined {
+  const p = apiPath.toLowerCase();
+  if (p.startsWith('/pos/')) {
+    return [
+      '_SystemState',
+      'POS Transactions',
+      'Daily Sales',
+      'Commission Ledger',
+      'Lunch Deductions',
+      'Customers',
+      'Appointments',
+      'Stock Items',
+      'Stock Movements',
+      'Gift Cards',
+      'Audit Logs',
+      'Settings',
+    ];
+  }
+  if (p.startsWith('/appointments') || p.startsWith('/walk-ins') || p.startsWith('/public/bookings')) {
+    return ['_SystemState', 'Appointments', 'Customers', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/customers')) {
+    return ['_SystemState', 'Customers', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/employees') || p.startsWith('/schedules') || p.startsWith('/attendance') || p.startsWith('/leaves')) {
+    return ['_SystemState', 'Employees', 'Employee Schedules', 'Attendance', 'Users', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/services')) {
+    return ['_SystemState', 'Services', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/commissions')) {
+    return ['_SystemState', 'Commission Ledger', 'Lunch Deductions', 'Commission Payments', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/expenses')) {
+    return ['_SystemState', 'Expenses', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/inventory')) {
+    return ['_SystemState', 'Stock Items', 'Stock Movements', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/gift-cards')) {
+    return ['_SystemState', 'Gift Cards', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/users')) {
+    return ['_SystemState', 'Users', 'Employees', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/auth/')) {
+    return ['_SystemState', 'Audit Logs', 'Settings'];
+  }
+  if (p.startsWith('/settings')) {
+    return ['_SystemState', 'Settings', 'Audit Logs'];
+  }
+  return undefined;
+}
+
+export function buildSheetMatrix(
+  db: SalonDatabase,
+  onlyTabs?: string[]
+): Record<string, (string | number | boolean)[][]> {
+  const fullMatrix: Record<string, (string | number | boolean)[][]> = {
     Users: [
       ['ID', 'Name', 'Email', 'Role', 'EmployeeID', 'Active', 'CreatedAt'],
       ...db.users.map((u) => [u.id, u.name, u.email, u.role, u.employeeId || '', u.active, u.createdAt]),
@@ -446,6 +503,17 @@ export function buildSheetMatrix(db: SalonDatabase): Record<string, (string | nu
     ],
     [SYSTEM_STATE_TAB]: encodeSystemStateRows(db),
   };
+  if (!onlyTabs || onlyTabs.length === 0) {
+    return fullMatrix;
+  }
+  const allow = new Set([...onlyTabs, SYSTEM_STATE_TAB]);
+  const filtered: Record<string, (string | number | boolean)[][]> = {};
+  for (const [key, val] of Object.entries(fullMatrix)) {
+    if (allow.has(key)) {
+      filtered[key] = val;
+    }
+  }
+  return filtered;
 }
 
 export async function createSalonGoogleSpreadsheet(
@@ -490,7 +558,8 @@ export async function createSalonGoogleSpreadsheet(
 export async function syncDatabaseToGoogleSheet(
   accessToken: string,
   spreadsheetId: string,
-  db: SalonDatabase
+  db: SalonDatabase,
+  onlyTabs?: string[]
 ): Promise<{ updatedCells: number; sheetTabs: string[] }> {
   // First fetch existing spreadsheet metadata so we never assume sheet names blindly
   const metaRes = await fetch(
@@ -534,7 +603,7 @@ export async function syncDatabaseToGoogleSheet(
     }
   }
 
-  const matrix = buildSheetMatrix(db);
+  const matrix = buildSheetMatrix(db, onlyTabs);
   const data = Object.entries(matrix).map(([sheetTitle, values]) => ({
     range: `'${sheetTitle}'!A1`,
     majorDimension: 'ROWS',
@@ -1121,20 +1190,41 @@ function normalizeAndValidateAppsScriptUrl(rawUrl: string): string {
 async function callAppsScriptBridge<T>(
   bridgeUrl: string,
   action: string,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  timeoutMs?: number
 ): Promise<T> {
   const validUrl = normalizeAndValidateAppsScriptUrl(bridgeUrl);
   const secret = process.env.GOOGLE_APPS_SCRIPT_SECRET?.trim() || undefined;
-  const res = await fetch(validUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action,
-      ...(secret ? { secret } : {}),
-      ...payload,
-    }),
-  });
+  const effectiveTimeout =
+    timeoutMs ??
+    (action === 'readState' || action === 'health' || action === 'readSheet' || action === 'readWorkbook'
+      ? 12_000
+      : 22_000);
+
+  let res: Response;
+  try {
+    res = await fetch(validUrl, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      signal: AbortSignal.timeout(effectiveTimeout),
+      body: JSON.stringify({
+        action,
+        ...(secret ? { secret } : {}),
+        ...payload,
+      }),
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.name === 'TimeoutError' || err.name === 'AbortError' || err.message.toLowerCase().includes('timeout'))
+    ) {
+      throw new Error(
+        `Google Sheets Apps Script bridge timed out after ${Math.round(effectiveTimeout / 1000)}s during "${action}".`
+      );
+    }
+    throw err;
+  }
 
   const text = await res.text();
   const isGoogleLoginHtml =
@@ -1201,14 +1291,15 @@ export async function createNewSheetViaAppsScript(
 
 export async function syncDatabaseViaAppsScript(
   bridgeUrl: string,
-  db: SalonDatabase
+  db: SalonDatabase,
+  onlyTabs?: string[]
 ): Promise<{
   updatedCells: number;
   sheetTabs: string[];
   spreadsheetId: string;
   spreadsheetUrl: string;
 }> {
-  const matrix = buildSheetMatrix(db);
+  const matrix = buildSheetMatrix(db, onlyTabs);
   return callAppsScriptBridge(bridgeUrl, 'syncMatrix', {
     spreadsheetId: db.settings.googleSpreadsheetId || undefined,
     sheets: matrix,

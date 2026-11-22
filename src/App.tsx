@@ -321,98 +321,103 @@ export default function App() {
   const effectiveWorkspaceConnected = googleConnected || cloudWorkspaceConnected;
 
   return (
-    <SidebarLayout
-      user={user}
-      branding={branding}
-      activeSection={activeSection}
-      onSelectSection={setActiveSection}
-      unreadNotifications={unreadNotifications}
-      googleConnected={effectiveWorkspaceConnected}
-      onConnectGoogle={() => void handleHeaderWorkspaceAction()}
-      onLogout={handleLogout}
+    <AppErrorBoundary
+      onReset={() => setActiveSection('dashboard')}
+      onSignOut={() => void handleLogout()}
     >
-      {workspaceError && (
-        <div className="mb-4 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start justify-between gap-3">
-          <div className="leading-relaxed">
-            <strong>Google Workspace Notice:</strong> {workspaceError}
-          </div>
-          <button
-            type="button"
-            onClick={() => setWorkspaceError('')}
-            className="px-2 py-0.5 rounded border border-amber-300 bg-white hover:bg-amber-100 font-semibold shrink-0 cursor-pointer"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-      <AppErrorBoundary
-        onReset={() => setActiveSection('dashboard')}
-        onSignOut={() => void handleLogout()}
+      <SidebarLayout
+        user={user}
+        branding={branding}
+        activeSection={activeSection}
+        onSelectSection={setActiveSection}
+        unreadNotifications={unreadNotifications}
+        googleConnected={effectiveWorkspaceConnected}
+        onConnectGoogle={() => void handleHeaderWorkspaceAction()}
+        onLogout={handleLogout}
       >
-        <Suspense fallback={<ViewLoader label="Loading section..." />}>
-          {activeSection === 'dashboard' && (
-            <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
-          )}
-          {activeSection === 'appointments' && (
-            <AppointmentsView
-              user={user}
-              branding={branding}
-              onCheckoutAppointment={(payload) => {
-                setPosPrefill(payload);
-                setActiveSection('pos');
-              }}
-            />
-          )}
-          {activeSection === 'pos' && (
-            <PosBillingView
-              user={user}
-              branding={branding}
-              prefill={posPrefill}
-              onClearPrefill={() => setPosPrefill(null)}
-            />
-          )}
-          {activeSection === 'customers' && <CustomersView user={user} />}
-          {(activeSection === 'employees' ||
-            activeSection === 'scheduling' ||
-            activeSection === 'attendance') && (
-            <EmployeesSchedulingView
-              mode={activeSection}
-              user={user}
-              googleConnected={effectiveWorkspaceConnected}
-              onConnectGoogle={handleHeaderWorkspaceAction}
-              onProfileSaved={() => void refreshCurrentUser()}
-            />
-          )}
-          {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
-          {(activeSection === 'commissions' ||
-            activeSection === 'payments' ||
-            activeSection === 'lunch') && (
-            <CommissionsView mode={activeSection} user={user} />
-          )}
-          {(activeSection === 'expenses' || activeSection === 'inventory') && (
-            <ExpensesInventoryView mode={activeSection} user={user} />
-          )}
-          {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
-          {activeSection === 'reports' && <ReportsView user={user} />}
-          {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
-          {(activeSection === 'notifications' ||
-            activeSection === 'users' ||
-            activeSection === 'settings' ||
-            activeSection === 'audit-logs') && (
-            <AdminViews
-              mode={activeSection}
-              user={user}
-              googleConnected={googleConnected}
-              onConnectGoogle={handleConnectGoogle}
-              onRefreshNotifications={() => void refreshNotifications()}
-              onBrandingUpdated={() => void refreshBranding()}
-              onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
-            />
-          )}
-        </Suspense>
-      </AppErrorBoundary>
-      <PWAInstallPromptBanner />
-      <OfflineIndicator />
-    </SidebarLayout>
+        {workspaceError && (
+          <div className="mb-4 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start justify-between gap-3">
+            <div className="leading-relaxed">
+              <strong>Google Workspace Notice:</strong> {workspaceError}
+            </div>
+            <button
+              type="button"
+              onClick={() => setWorkspaceError('')}
+              className="px-2 py-0.5 rounded border border-amber-300 bg-white hover:bg-amber-100 font-semibold shrink-0 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        <AppErrorBoundary
+          onReset={() => setActiveSection('dashboard')}
+          onSignOut={() => void handleLogout()}
+        >
+          <Suspense fallback={<ViewLoader label="Loading section..." />}>
+            {activeSection === 'dashboard' && (
+              <DashboardView user={user} branding={branding} onNavigate={setActiveSection} />
+            )}
+            {activeSection === 'appointments' && (
+              <AppointmentsView
+                user={user}
+                branding={branding}
+                onCheckoutAppointment={(payload) => {
+                  setPosPrefill(payload);
+                  setActiveSection('pos');
+                }}
+              />
+            )}
+            {activeSection === 'pos' && (
+              <PosBillingView
+                user={user}
+                branding={branding}
+                prefill={posPrefill}
+                onClearPrefill={() => setPosPrefill(null)}
+              />
+            )}
+            {activeSection === 'customers' && <CustomersView user={user} />}
+            {(activeSection === 'employees' ||
+              activeSection === 'scheduling' ||
+              activeSection === 'attendance') && (
+              <EmployeesSchedulingView
+                mode={activeSection}
+                user={user}
+                googleConnected={effectiveWorkspaceConnected}
+                onConnectGoogle={handleHeaderWorkspaceAction}
+                onProfileSaved={() => void refreshCurrentUser()}
+              />
+            )}
+            {activeSection === 'services' && <ServicesView user={user} branding={branding} />}
+            {(activeSection === 'commissions' ||
+              activeSection === 'payments' ||
+              activeSection === 'lunch') && (
+              <CommissionsView mode={activeSection} user={user} />
+            )}
+            {(activeSection === 'expenses' || activeSection === 'inventory') && (
+              <ExpensesInventoryView mode={activeSection} user={user} />
+            )}
+            {activeSection === 'gift-cards' && <GiftCardsView user={user} />}
+            {activeSection === 'reports' && <ReportsView user={user} />}
+            {activeSection === 'ai-assistant' && <AiAssistantView user={user} />}
+            {(activeSection === 'notifications' ||
+              activeSection === 'users' ||
+              activeSection === 'settings' ||
+              activeSection === 'audit-logs') && (
+              <AdminViews
+                mode={activeSection}
+                user={user}
+                googleConnected={googleConnected}
+                onConnectGoogle={handleConnectGoogle}
+                onRefreshNotifications={() => void refreshNotifications()}
+                onBrandingUpdated={() => void refreshBranding()}
+                onWorkspaceUpdated={() => void refreshWorkspaceHealth()}
+              />
+            )}
+          </Suspense>
+        </AppErrorBoundary>
+        <PWAInstallPromptBanner />
+        <OfflineIndicator />
+      </SidebarLayout>
+    </AppErrorBoundary>
   );
 }
