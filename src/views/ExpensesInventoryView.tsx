@@ -188,7 +188,7 @@ export const ExpensesInventoryView: React.FC<{
     setStkBrand('');
     setStkUnit(defaultGroup === 'salon_owned' ? 'Piece' : 'Bottle');
     setStkOpenQty(10);
-    setStkCost(10000);
+    setStkCost(defaultGroup === 'for_sale' ? 10000 : 0);
     setStkSell(defaultGroup === 'for_sale' ? 20000 : 0);
     setStkMin(3);
     setStkGroup(defaultGroup);
@@ -197,14 +197,15 @@ export const ExpensesInventoryView: React.FC<{
 
   const openEditStockModal = (item: StockItem) => {
     const group = getItemGroup(item);
+    const isForSale = group === 'for_sale';
     setEditingStockItem(item);
     setStkName(item.name);
     setStkCat(item.category);
     setStkBrand(item.brand || '');
     setStkUnit(item.unit || 'Unit');
     setStkOpenQty(item.openingQuantity);
-    setStkCost(item.purchasePrice);
-    setStkSell(item.sellingPrice);
+    setStkCost(isForSale ? item.purchasePrice : 0);
+    setStkSell(isForSale ? item.sellingPrice : 0);
     setStkMin(item.minStockLevel);
     setStkGroup(group);
     setShowStockModal(true);
@@ -224,7 +225,7 @@ export const ExpensesInventoryView: React.FC<{
             category: stkCat,
             brand: stkBrand,
             unit: stkUnit,
-            purchasePrice: stkCost,
+            purchasePrice: isForSale ? stkCost : 0,
             sellingPrice: isForSale ? stkSell : 0,
             minStockLevel: stkMin,
             isRetail: isForSale,
@@ -241,7 +242,7 @@ export const ExpensesInventoryView: React.FC<{
             brand: stkBrand,
             unit: stkUnit,
             openingQuantity: stkOpenQty,
-            purchasePrice: stkCost,
+            purchasePrice: isForSale ? stkCost : 0,
             sellingPrice: isForSale ? stkSell : 0,
             minStockLevel: stkMin,
             isRetail: isForSale,
@@ -609,10 +610,7 @@ export const ExpensesInventoryView: React.FC<{
   const salonOwnedItems = stockItems.filter((item) => getItemGroup(item) === 'salon_owned');
   const forSaleItems = stockItems.filter((item) => getItemGroup(item) === 'for_sale');
 
-  const salonOwnedValuation = salonOwnedItems.reduce(
-    (s, i) => s + i.currentQuantity * i.purchasePrice,
-    0
-  );
+  const salonOwnedTotalUnits = salonOwnedItems.reduce((s, i) => s + i.currentQuantity, 0);
   const forSaleCostValuation = forSaleItems.reduce(
     (s, i) => s + i.currentQuantity * i.purchasePrice,
     0
@@ -621,13 +619,11 @@ export const ExpensesInventoryView: React.FC<{
     (s, i) => s + i.currentQuantity * i.sellingPrice,
     0
   );
-  const totalValuation = salonOwnedValuation + forSaleCostValuation;
   const criticalStockLowItems = stockItems.filter(isCriticalStockLow);
   const belowReorderItems = stockItems.filter(isBelowReorder);
-  const criticalRestockEstCost = criticalStockLowItems.reduce(
-    (sum, i) => sum + getSuggestedRestockQty(i) * i.purchasePrice,
-    0
-  );
+  const criticalRestockEstCost = criticalStockLowItems
+    .filter((i) => getItemGroup(i) === 'for_sale')
+    .reduce((sum, i) => sum + getSuggestedRestockQty(i) * i.purchasePrice, 0);
 
   const matchesStockFilter = (item: StockItem) => {
     if (stockFilter === 'stock_low') return isCriticalStockLow(item);
@@ -682,7 +678,7 @@ export const ExpensesInventoryView: React.FC<{
               <p className="text-[11px] text-[#1D1717]/65 mt-0.5 font-mono tabular-nums">
                 {isForSale
                   ? `Sold to clients at POS checkout · Cost Value: ${formatUGX(sectionCost)} · Retail Value: ${formatUGX(sectionRetail)}`
-                  : `Owned by salon for treatments, sanitation & tools (not listed in POS) · Asset/Stock Cost: ${formatUGX(sectionCost)}`}
+                  : 'Owned by salon for internal treatments, sanitation & tools (no pricing)'}
               </p>
             </div>
           </div>
@@ -721,10 +717,8 @@ export const ExpensesInventoryView: React.FC<{
                   <th className="py-3 px-3 text-right">Stock Qty</th>
                   <th className="py-3 px-3 text-right">Reorder Level</th>
                   <th className="py-3 px-3">Stock Status</th>
-                  <th className="py-3 px-3 text-right">Cost Price</th>
-                  <th className="py-3 px-3 text-right">
-                    {isForSale ? 'Selling Price' : 'Usage'}
-                  </th>
+                  {isForSale && <th className="py-3 px-3 text-right">Cost Price</th>}
+                  {isForSale && <th className="py-3 px-3 text-right">Selling Price</th>}
                   {canManageInv && <th className="py-3 px-3 text-right">Actions</th>}
                 </tr>
               </thead>
@@ -790,16 +784,16 @@ export const ExpensesInventoryView: React.FC<{
                           </div>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums">
-                        {formatUGX(item.purchasePrice)}
-                      </td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold">
-                        {isForSale ? (
-                          <span className="text-[#E83B84]">{formatUGX(item.sellingPrice)}</span>
-                        ) : (
-                          <span className="text-[#1D1717]/65 font-sans">Salon Owned</span>
-                        )}
-                      </td>
+                      {isForSale && (
+                        <td className="py-3 px-3 text-right font-mono tabular-nums">
+                          {formatUGX(item.purchasePrice)}
+                        </td>
+                      )}
+                      {isForSale && (
+                        <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-[#E83B84]">
+                          {formatUGX(item.sellingPrice)}
+                        </td>
+                      )}
                       {canManageInv && (
                         <td className="py-3 px-3 text-right whitespace-nowrap space-x-1.5">
                           <button
@@ -867,7 +861,7 @@ export const ExpensesInventoryView: React.FC<{
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-xs font-mono tabular-nums">
-            Total Cost Value: <strong>{formatUGX(totalValuation)}</strong> &middot;{' '}
+            Retail Cost Value: <strong>{formatUGX(forSaleCostValuation)}</strong> &middot;{' '}
             <span className={criticalStockLowItems.length > 0 ? 'text-red-700 font-bold' : 'text-[#1D1717]/70'}>
               {criticalStockLowItems.length} Stock Low (&lt;10%)
             </span>
@@ -947,7 +941,8 @@ export const ExpensesInventoryView: React.FC<{
               const pct = getReorderPercent(item);
               const threshold10 = Number((item.minStockLevel * 0.1).toFixed(1));
               const suggestedQty = getSuggestedRestockQty(item);
-              const estCost = suggestedQty * item.purchasePrice;
+              const isForSaleItem = getItemGroup(item) === 'for_sale';
+              const estCost = isForSaleItem ? suggestedQty * item.purchasePrice : 0;
               return (
                 <div
                   key={item.id}
@@ -962,14 +957,15 @@ export const ExpensesInventoryView: React.FC<{
                       <span className="font-semibold text-[#1D1717]">{item.name}</span>
                       <span className="font-mono text-[#1D1717]/60">({item.sku})</span>
                       <span className="text-[11px] text-[#1D1717]/60">
-                        [{getItemGroup(item) === 'for_sale' ? 'For Sale' : 'Owned by Salon'}]
+                        [{isForSaleItem ? 'For Sale' : 'Owned by Salon'}]
                       </span>
                     </div>
                     <div className="text-[11px] text-[#1D1717]/75 font-mono tabular-nums mt-0.5">
                       On hand: <strong className="text-red-700">{item.currentQuantity} {item.unit}</strong>
                       {' · '}Reorder level: {item.minStockLevel} {item.unit} (10% threshold: {threshold10})
                       {' · '}{pct}% of reorder
-                      {' · '}Suggested order: +{suggestedQty} {item.unit} ({formatUGX(estCost)})
+                      {' · '}Suggested order: +{suggestedQty} {item.unit}
+                      {isForSaleItem ? ` (${formatUGX(estCost)})` : ''}
                     </div>
                   </div>
                   {canManageInv && (
@@ -1018,10 +1014,10 @@ export const ExpensesInventoryView: React.FC<{
                 </div>
                 <div className="mt-2 flex items-baseline justify-between gap-2">
                   <span className="text-lg font-bold font-mono tabular-nums text-[#1D1717]">
-                    {formatUGX(salonOwnedValuation)}
+                    {salonOwnedTotalUnits} units on hand
                   </span>
                   <span className="text-[11px] text-[#1D1717]/60">
-                    Internal supplies, tools &amp; consumables
+                    Internal supplies &amp; tools (no pricing)
                   </span>
                 </div>
               </button>
@@ -1189,6 +1185,7 @@ export const ExpensesInventoryView: React.FC<{
                   type="button"
                   onClick={() => {
                     setStkGroup('salon_owned');
+                    setStkCost(0);
                     setStkSell(0);
                   }}
                   className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border font-semibold cursor-pointer ${
@@ -1204,6 +1201,7 @@ export const ExpensesInventoryView: React.FC<{
                   type="button"
                   onClick={() => {
                     setStkGroup('for_sale');
+                    if (stkCost === 0) setStkCost(10000);
                     if (stkSell === 0) setStkSell(20000);
                   }}
                   className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border font-semibold cursor-pointer ${
@@ -1219,7 +1217,7 @@ export const ExpensesInventoryView: React.FC<{
               <p className="text-[11px] text-[#1D1717]/60 mt-1">
                 {stkGroup === 'for_sale'
                   ? 'Retail product — appears in POS checkout for client purchase.'
-                  : 'Owned by salon — internal supplies, backbar, or equipment (not sold in POS).'}
+                  : 'Owned by salon — internal supplies, backbar, or equipment (no prices, not sold in POS).'}
               </p>
             </div>
             <input
@@ -1276,29 +1274,30 @@ export const ExpensesInventoryView: React.FC<{
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block font-semibold mb-1">Purchase Price (UGX)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={stkCost}
-                  onChange={(e) => setStkCost(Number(e.target.value))}
-                  className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                />
+            {stkGroup === 'for_sale' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold mb-1">Purchase Price (UGX)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={stkCost}
+                    onChange={(e) => setStkCost(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Selling Price (UGX)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={stkSell}
+                    onChange={(e) => setStkSell(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block font-semibold mb-1">Selling Price (UGX)</label>
-                <input
-                  type="number"
-                  min={0}
-                  disabled={stkGroup !== 'for_sale'}
-                  value={stkGroup === 'for_sale' ? stkSell : 0}
-                  onChange={(e) => setStkSell(Number(e.target.value))}
-                  className="w-full px-2.5 py-2 rounded-xl border border-[#1D1717]/15 font-mono disabled:opacity-45"
-                />
-              </div>
-            </div>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"

@@ -3103,7 +3103,7 @@ export function createApiRouter() {
         unit: b.unit || 'Unit',
         openingQuantity: openQty,
         currentQuantity: openQty,
-        purchasePrice: Math.max(0, Number(b.purchasePrice) || 0),
+        purchasePrice: isRetail ? Math.max(0, Number(b.purchasePrice) || 0) : 0,
         sellingPrice: isRetail ? Math.max(0, Number(b.sellingPrice) || 0) : 0,
         supplierId: b.supplierId,
         supplierName: db.suppliers.find((s) => s.id === b.supplierId)?.name || b.supplierName,
@@ -3183,7 +3183,6 @@ export function createApiRouter() {
       }
       if (b.brand !== undefined) item.brand = b.brand.trim() || 'Salon Stock';
       if (b.unit !== undefined) item.unit = b.unit.trim() || 'Unit';
-      if (b.purchasePrice !== undefined) item.purchasePrice = Math.max(0, Number(b.purchasePrice) || 0);
       if (b.minStockLevel !== undefined) item.minStockLevel = Math.max(0, Number(b.minStockLevel) || 0);
       if (b.inventoryGroup === 'salon_owned' || b.inventoryGroup === 'for_sale') {
         item.inventoryGroup = b.inventoryGroup;
@@ -3192,10 +3191,12 @@ export function createApiRouter() {
         item.isRetail = Boolean(b.isRetail);
         item.inventoryGroup = item.isRetail ? 'for_sale' : 'salon_owned';
       }
-      if (b.sellingPrice !== undefined) {
-        item.sellingPrice = item.isRetail ? Math.max(0, Number(b.sellingPrice) || 0) : 0;
-      } else if (!item.isRetail) {
+      if (!item.isRetail) {
+        item.purchasePrice = 0;
         item.sellingPrice = 0;
+      } else {
+        if (b.purchasePrice !== undefined) item.purchasePrice = Math.max(0, Number(b.purchasePrice) || 0);
+        if (b.sellingPrice !== undefined) item.sellingPrice = Math.max(0, Number(b.sellingPrice) || 0);
       }
       appendAuditLog(
         db,
@@ -3356,7 +3357,11 @@ export function createApiRouter() {
             item.minStockLevel + 5
           );
           const suggestedOrderQty = Math.max(1, targetQuantity - item.currentQuantity);
-          const estimatedCost = suggestedOrderQty * item.purchasePrice;
+          const isRetailItem =
+            item.inventoryGroup === 'for_sale' ||
+            (item.inventoryGroup !== 'salon_owned' && item.isRetail);
+          const unitPurchasePrice = isRetailItem ? item.purchasePrice : 0;
+          const estimatedCost = isRetailItem ? suggestedOrderQty * unitPurchasePrice : 0;
           const supplier = db.suppliers.find((s) => s.id === item.supplierId);
           return {
             stockItemId: item.id,
@@ -3370,7 +3375,7 @@ export function createApiRouter() {
             reorderPercent,
             priority: isCriticalStockLow ? ('Stock Low (<10%)' as const) : ('Below Reorder' as const),
             suggestedOrderQty,
-            unitPurchasePrice: item.purchasePrice,
+            unitPurchasePrice,
             estimatedCost,
             supplierName: supplier?.name || item.supplierName || 'General Supplier',
             supplierPhone: supplier?.phone || '—',
@@ -3635,7 +3640,7 @@ export function createApiRouter() {
       );
 
       const inventoryValuation = db.stockItems.reduce(
-        (s, item) => s + item.currentQuantity * item.purchasePrice,
+        (s, item) => s + (item.isRetail ? item.currentQuantity * item.purchasePrice : 0),
         0
       );
 

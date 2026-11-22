@@ -434,22 +434,24 @@ export function buildSheetMatrix(
     ],
     'Stock Items': [
       ['ID', 'SKU', 'Name', 'InventoryPart', 'Category', 'Brand', 'Unit', 'CurrentQty', 'PurchasePriceUGX', 'SellingPriceUGX', 'MinLevel', 'Retail'],
-      ...db.stockItems.map((s) => [
-        s.id,
-        s.sku,
-        s.name,
-        s.inventoryGroup === 'for_sale' || (s.inventoryGroup !== 'salon_owned' && s.isRetail)
-          ? 'Items for Sale'
-          : 'Owned by Salon',
-        s.category,
-        s.brand,
-        s.unit,
-        s.currentQuantity,
-        s.purchasePrice,
-        s.sellingPrice,
-        s.minStockLevel,
-        s.isRetail,
-      ]),
+      ...db.stockItems.map((s) => {
+        const isForSale =
+          s.inventoryGroup === 'for_sale' || (s.inventoryGroup !== 'salon_owned' && s.isRetail);
+        return [
+          s.id,
+          s.sku,
+          s.name,
+          isForSale ? 'Items for Sale' : 'Owned by Salon',
+          s.category,
+          s.brand,
+          s.unit,
+          s.currentQuantity,
+          isForSale ? s.purchasePrice : '',
+          isForSale ? s.sellingPrice : '',
+          s.minStockLevel,
+          s.isRetail,
+        ];
+      }),
     ],
     'Stock Movements': [
       ['ID', 'StockItem', 'Date', 'Type', 'Delta', 'QuantityAfter', 'ReferenceID', 'RecordedBy', 'Notes'],
