@@ -18,6 +18,7 @@ import {
   FolderOpen,
   History,
   Image as ImageIcon,
+  Link2,
   LogOut,
   Plus,
   RefreshCw,
@@ -28,6 +29,7 @@ import {
   ShieldCheck,
   Trash2,
   Upload,
+  UserCheck,
   X,
   XCircle,
 } from 'lucide-react';
@@ -172,6 +174,10 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   const [uPass, setUPass] = useState('');
   const [showUPass, setShowUPass] = useState(false);
   const [userModalError, setUserModalError] = useState('');
+  const [linkModalUser, setLinkModalUser] = useState<(typeof users)[number] | null>(null);
+  const [linkEmpSelection, setLinkEmpSelection] = useState('');
+  const [savingProfileLink, setSavingProfileLink] = useState(false);
+  const [linkModalError, setLinkModalError] = useState('');
 
   // Audit logs & User Session History
   const [logs, setLogs] = useState<
@@ -487,19 +493,55 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
           name: uName,
           email: uEmail,
           role: uRole,
-          employeeId: uRole === 'employee' ? uEmpId || undefined : undefined,
+          employeeId: uEmpId || undefined,
           password: uPass,
         }),
       });
       setShowUserModal(false);
       setUName('');
       setUEmail('');
+      setUEmpId('');
       setUPass('');
       setUserModalError('');
       setMsg('User account created.');
       await load();
     } catch (err) {
       setUserModalError(err instanceof Error ? err.message : 'Failed to create user.');
+    }
+  };
+
+  const openLinkProfileModal = (u: typeof users[number]) => {
+    setLinkModalUser(u);
+    setLinkEmpSelection(u.employeeId || '');
+    setLinkModalError('');
+  };
+
+  const handleSaveProfileLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!linkModalUser) return;
+    setSavingProfileLink(true);
+    setLinkModalError('');
+    setError('');
+    setMsg('');
+    try {
+      await apiFetch(`/api/users/${linkModalUser.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          employeeId: linkEmpSelection || null,
+        }),
+      });
+      const chosenEmp = employees.find((emp) => emp.id === linkEmpSelection);
+      setMsg(
+        chosenEmp
+          ? `Linked employee profile "${chosenEmp.fullName}" to ${linkModalUser.email}.`
+          : `Unlinked employee profile from ${linkModalUser.email}.`
+      );
+      setLinkModalUser(null);
+      await load();
+    } catch (err) {
+      setLinkModalError(err instanceof Error ? err.message : 'Failed to update linked employee profile.');
+    } finally {
+      setSavingProfileLink(false);
     }
   };
 
@@ -771,8 +813,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               </h2>
               <p className="text-xs text-[#1D1717]/60 mt-0.5">
                 {isOwner
-                  ? 'Owner / Admin can create, disable, re-enable, and permanently delete user accounts.'
-                  : 'Manager Access: You can only disable active employee accounts. Creating, re-enabling, or deleting accounts requires Owner / Admin permissions.'}
+                  ? 'Owner / Admin can create users, link staff profiles, disable, re-enable, and permanently delete user accounts.'
+                  : 'Manager Access: You can link employee profiles to created non-owner user accounts and disable active employee accounts. Creating, re-enabling, or deleting accounts requires Owner / Admin permissions.'}
               </p>
             </div>
             {isOwner && (
@@ -791,6 +833,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   <th className="py-3 px-3">Name</th>
                   <th className="py-3 px-3">Email</th>
                   <th className="py-3 px-3">Role</th>
+                  <th className="py-3 px-3">Linked Profile</th>
                   <th className="py-3 px-3">Last Login</th>
                   <th className="py-3 px-3">Status</th>
                   <th className="py-3 px-3 text-right">Action</th>
@@ -800,12 +843,29 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 {users.map((u) => {
                   const isSelf = u.id === user.userId;
                   const canDisableAsManager = isManager && u.role === 'employee' && u.active;
+                  const canLinkProfile = isOwner || (isManager && u.role !== 'owner');
+                  const linkedEmp = u.employeeId
+                    ? employees.find((emp) => emp.id === u.employeeId)
+                    : undefined;
                   return (
                     <tr key={u.id}>
                       <td className="py-3 px-3 font-semibold">{u.name}</td>
                       <td className="py-3 px-3 font-mono">{u.email}</td>
                       <td className="py-3 px-3 capitalize font-semibold text-[#E83B84]">
                         {u.role === 'owner' ? 'Owner / Admin' : u.role}
+                      </td>
+                      <td className="py-3 px-3">
+                        {linkedEmp ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#F8EEEB] border border-[#1D1717]/10">
+                            <UserCheck className="w-3 h-3 text-[#E83B84] shrink-0" />
+                            <div>
+                              <span className="font-semibold text-[#1D1717]">{linkedEmp.fullName}</span>
+                              <span className="text-[#1D1717]/55 ml-1">({linkedEmp.roleTitle})</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-[#1D1717]/45 italic">Not linked</span>
+                        )}
                       </td>
                       <td className="py-3 px-3 font-mono text-[#1D1717]/60">
                         {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : 'Never'}
@@ -822,41 +882,53 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-3 text-right">
-                        {isSelf ? (
-                          <span className="text-[11px] text-[#1D1717]/45 font-medium">Current Session</span>
-                        ) : isOwner ? (
-                          <div className="inline-flex items-center justify-end gap-2">
+                        <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                          {canLinkProfile && (
+                            <button
+                              type="button"
+                              onClick={() => openLinkProfileModal(u)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-[#E83B84]/35 bg-[#F3BFD3]/25 text-[#1D1717] hover:bg-[#F3BFD3]/45 text-xs font-semibold cursor-pointer"
+                            >
+                              <Link2 className="w-3 h-3 text-[#E83B84]" />
+                              {linkedEmp ? 'Change Link' : 'Link Profile'}
+                            </button>
+                          )}
+                          {isSelf ? (
+                            <span className="text-[11px] text-[#1D1717]/45 font-medium">Current Session</span>
+                          ) : isOwner ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleUser(u)}
+                                className={`px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
+                                  u.active
+                                    ? 'border-amber-200 text-amber-800 hover:bg-amber-50'
+                                    : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                                }`}
+                              >
+                                {u.active ? 'Disable' : 'Enable'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUser(u)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 text-xs font-semibold cursor-pointer"
+                                title={`Delete ${u.email}`}
+                              >
+                                <Trash2 className="w-3 h-3" /> Delete
+                              </button>
+                            </>
+                          ) : canDisableAsManager ? (
                             <button
                               type="button"
                               onClick={() => handleToggleUser(u)}
-                              className={`px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer ${
-                                u.active
-                                  ? 'border-amber-200 text-amber-800 hover:bg-amber-50'
-                                  : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
-                              }`}
+                              className="px-2.5 py-1 rounded-lg border border-amber-200 text-amber-800 hover:bg-amber-50 text-xs font-semibold cursor-pointer"
                             >
-                              {u.active ? 'Disable' : 'Enable'}
+                              Disable
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteUser(u)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 text-xs font-semibold cursor-pointer"
-                              title={`Delete ${u.email}`}
-                            >
-                              <Trash2 className="w-3 h-3" /> Delete
-                            </button>
-                          </div>
-                        ) : canDisableAsManager ? (
-                          <button
-                            type="button"
-                            onClick={() => handleToggleUser(u)}
-                            className="px-2.5 py-1 rounded-lg border border-amber-200 text-amber-800 hover:bg-amber-50 text-xs font-semibold cursor-pointer"
-                          >
-                            Disable
-                          </button>
-                        ) : (
-                          <span className="text-[11px] text-[#1D1717]/45">Admin Only</span>
-                        )}
+                          ) : !canLinkProfile ? (
+                            <span className="text-[11px] text-[#1D1717]/45">Admin Only</span>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -864,6 +936,92 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               </tbody>
             </table>
           </div>
+          {linkModalUser && (
+            <div className="fixed inset-0 z-50 bg-[#1D1717]/45 flex items-center justify-center p-4 overflow-y-auto">
+              <form
+                onSubmit={handleSaveProfileLink}
+                className="w-full max-w-md bg-white rounded-2xl border border-[#1D1717]/15 p-6 space-y-4 text-xs my-6 shadow-xl"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-base font-bold flex items-center gap-2">
+                      <Link2 className="w-4 h-4 text-[#E83B84]" /> Link Profile to Created User
+                    </h3>
+                    <p className="text-[11px] text-[#1D1717]/65 mt-1">
+                      Account: <strong className="text-[#1D1717]">{linkModalUser.name}</strong> (
+                      <span className="font-mono">{linkModalUser.email}</span> ·{' '}
+                      <span className="capitalize">
+                        {linkModalUser.role === 'owner' ? 'Owner / Admin' : linkModalUser.role}
+                      </span>
+                      )
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLinkModalUser(null)}
+                    className="p-1 rounded-lg hover:bg-[#F8EEEB] text-[#1D1717]/60 cursor-pointer"
+                    aria-label="Close link profile modal"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {linkModalError && (
+                  <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
+                    {linkModalError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold mb-1.5">
+                    Select Employee / Staff Profile
+                  </label>
+                  <select
+                    value={linkEmpSelection}
+                    onChange={(e) => setLinkEmpSelection(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-[#1D1717]/15 bg-white"
+                  >
+                    <option value="">— Not Linked (Unlink Profile) —</option>
+                    {employees.map((emp) => {
+                      const otherLinkedUser = users.find(
+                        (other) => other.id !== linkModalUser.id && other.employeeId === emp.id
+                      );
+                      return (
+                        <option
+                          key={emp.id}
+                          value={emp.id}
+                          disabled={Boolean(otherLinkedUser)}
+                        >
+                          {emp.fullName} — {emp.roleTitle}
+                          {otherLinkedUser ? ` (Linked to ${otherLinkedUser.email})` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="text-[11px] text-[#1D1717]/60 mt-1.5 leading-relaxed">
+                    Linking connects this login account to the staff profile&apos;s schedules, attendance, commissions, and personal documents. Profiles already linked to another user must be unlinked there first.
+                  </p>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setLinkModalUser(null)}
+                    className="px-4 py-2 rounded-xl border border-[#1D1717]/15 font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingProfileLink}
+                    className="px-4 py-2 rounded-xl bg-[#E83B84] hover:bg-[#d12d73] text-white font-semibold cursor-pointer disabled:opacity-50"
+                  >
+                    {savingProfileLink ? 'Saving...' : 'Save Profile Link'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
           {isOwner && showUserModal && (
             <div className="fixed inset-0 z-50 bg-[#1D1717]/45 flex items-center justify-center p-4 overflow-y-auto">
               <form
@@ -900,20 +1058,27 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   <option value="manager">Manager</option>
                   <option value="employee">Employee (Self-Service Only)</option>
                 </select>
-                {uRole === 'employee' && (
+                <div>
+                  <label className="block font-semibold mb-1 text-[11px] text-[#1D1717]/75">
+                    Link Employee Profile (Optional — Admins &amp; Managers can also link later)
+                  </label>
                   <select
                     value={uEmpId}
                     onChange={(e) => setUEmpId(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
                   >
-                    <option value="">Link to Employee Profile...</option>
-                    {employees.map((emp) => (
-                      <option key={emp.id} value={emp.id}>
-                        {emp.fullName}
-                      </option>
-                    ))}
+                    <option value="">Link to Employee Profile later...</option>
+                    {employees.map((emp) => {
+                      const alreadyLinked = users.find((existing) => existing.employeeId === emp.id);
+                      return (
+                        <option key={emp.id} value={emp.id} disabled={Boolean(alreadyLinked)}>
+                          {emp.fullName} — {emp.roleTitle}
+                          {alreadyLinked ? ` (Linked to ${alreadyLinked.email})` : ''}
+                        </option>
+                      );
+                    })}
                   </select>
-                )}
+                </div>
                 <div className="relative">
                   <input
                     type={showUPass ? 'text' : 'password'}

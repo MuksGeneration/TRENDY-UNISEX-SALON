@@ -103,8 +103,8 @@ function resolveEmployeeForUser(
   user: { userId?: string; id?: string; employeeId?: string; email?: string; name?: string }
 ): Employee | undefined {
   const uid = user.userId || user.id;
-  const linkedEmpId = uid ? db.users.find((u) => u.id === uid)?.employeeId : undefined;
-  const candidateId = user.employeeId || linkedEmpId;
+  const dbUserRecord = uid ? db.users.find((u) => u.id === uid) : undefined;
+  const candidateId = dbUserRecord ? dbUserRecord.employeeId : user.employeeId;
   if (candidateId) {
     const byId = db.employees.find((e) => e.id === candidateId);
     if (byId) return byId;
@@ -448,13 +448,21 @@ export function createApiRouter() {
   router.get('/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
     const db = readDb();
     const sessionUser = req.sessionUser!;
+    const dbUser = db.users.find((u) => u.id === sessionUser.userId);
     const resolvedEmp =
-      sessionUser.role === 'employee' ? resolveEmployeeForUser(db, sessionUser) : undefined;
+      sessionUser.role === 'employee'
+        ? resolveEmployeeForUser(db, sessionUser)
+        : dbUser?.employeeId
+          ? db.employees.find((e) => e.id === dbUser.employeeId)
+          : undefined;
     res.json({
       user: {
         ...sessionUser,
-        name: resolvedEmp?.fullName || sessionUser.name,
-        employeeId: resolvedEmp?.id || sessionUser.employeeId,
+        name:
+          sessionUser.role === 'employee'
+            ? resolvedEmp?.fullName || dbUser?.name || sessionUser.name
+            : dbUser?.name || sessionUser.name,
+        employeeId: resolvedEmp?.id || dbUser?.employeeId,
       },
     });
   });
@@ -2223,11 +2231,14 @@ export function createApiRouter() {
     const db = readDb();
     const user = req.sessionUser!;
     if (user.role === 'employee') {
+      const empId = resolveEmployeeForUser(db, user)?.id || '';
       res.json({
-        transactions: db.posTransactions
-          .filter((tx) => tx.items.some((i) => i.employeeId === user.employeeId))
-          .slice(-50)
-          .reverse(),
+        transactions: empId
+          ? db.posTransactions
+              .filter((tx) => tx.items.some((i) => i.employeeId === empId))
+              .slice(-50)
+              .reverse()
+          : [],
       });
       return;
     }
@@ -5335,10 +5346,28 @@ export function createApiRouter() {
       res.status(400).json({ error: 'Invalid user role. Allowed roles: owner, manager, employee.' });
       return;
     }
-    const resolvedEmpId =
-      targetRole === 'employee'
-        ? employeeId || resolveEmployeeForUser(db, { email, name })?.id
-        : undefined;
+    const requestedEmpId = typeof employeeId === 'string' ? employeeId.trim() : '';
+    let resolvedEmpId: string | undefined;
+    if (requestedEmpId) {
+      const targetEmp = db.employees.find((e) => e.id === requestedEmpId);
+      if (!targetEmp) {
+        res.status(404).json({ error: 'Selected employee profile was not found.' });
+        return;
+      }
+      const alreadyLinked = db.users.find((u) => u.employeeId === targetEmp.id);
+      if (alreadyLinked) {
+        res.status(409).json({
+          error: `Employee profile "${targetEmp.fullName}" is already linked to ${alreadyLinked.email}.`,
+        });
+        return;
+      }
+      resolvedEmpId = targetEmp.id;
+    } else if (targetRole === 'employee') {
+      const autoMatched = resolveEmployeeForUser(db, { email, name });
+      if (autoMatched && !db.users.some((u) => u.employeeId === autoMatched.id)) {
+        resolvedEmpId = autoMatched.id;
+      }
+    }
     const newUser = {
       id: makeId('USR'),
       name: name.trim(),
@@ -5356,7 +5385,7 @@ export function createApiRouter() {
       'USER_CREATED',
       'User',
       newUser.id,
-      `Created user ${newUser.email} with role ${newUser.role}.`
+      `Created user ${newUser.email} with role ${newUser.role}${resolvedEmpId ? ` (linked to ${resolvedEmpId})` : ''}.`
     );
     writeDb(db);
     const { passwordHash: _ph, ...safe } = newUser;
@@ -5381,36 +5410,93 @@ export function createApiRouter() {
         role?: UserRole;
         name?: string;
         password?: string;
+        employeeId?: string | null;
       };
 
       if (actor.role === 'manager') {
-        if (target.role !== 'employee') {
+        if (target.role === 'owner') {
+          res.status(403).json({
+            error: 'Managers cannot modify Owner / Admin user accounts.',
+          });
+          return;
+        }
+        if (
+          body.role !== undefined ||
+          body.name !== undefined ||
+          body.password !== undefined ||
+          body.active === true
+        ) {
+          res.status(403).json({
+            error:
+              'Managers can only link employee profiles to created non-owner users or disable active employee accounts. Editing roles, names, passwords, or re-enabling accounts requires Owner / Admin permissions.',
+          });
+          return;
+        }
+        if (body.active === false && target.role !== 'employee') {
           res.status(403).json({
             error:
               'Managers can only disable employee accounts. Other user accounts require Owner / Admin permissions.',
           });
           return;
         }
-        if (
-          body.active !== false ||
-          body.role !== undefined ||
-          body.name !== undefined ||
-          body.password !== undefined
-        ) {
-          res.status(403).json({
-            error:
-              'Managers can only disable employee accounts. Re-enabling or editing account details requires Owner / Admin permissions.',
-          });
+        if (body.active === undefined && body.employeeId === undefined) {
+          res.status(400).json({ error: 'No valid update fields were provided.' });
           return;
         }
-        target.active = false;
+      }
+
+      let nextEmployeeId: string | null | undefined;
+      let linkedEmployeeName: string | undefined;
+      if (body.employeeId !== undefined) {
+        const trimmedEmpId = typeof body.employeeId === 'string' ? body.employeeId.trim() : '';
+        if (!trimmedEmpId) {
+          nextEmployeeId = null;
+        } else {
+          const emp = db.employees.find((e) => e.id === trimmedEmpId);
+          if (!emp) {
+            res.status(404).json({ error: 'Selected employee profile was not found.' });
+            return;
+          }
+          const conflictingUser = db.users.find(
+            (u) => u.id !== target.id && u.employeeId === emp.id
+          );
+          if (conflictingUser) {
+            res.status(409).json({
+              error: `Employee profile "${emp.fullName}" is already linked to ${conflictingUser.email}. Unlink it there first or choose another profile.`,
+            });
+            return;
+          }
+          nextEmployeeId = emp.id;
+          linkedEmployeeName = emp.fullName;
+        }
+      }
+
+      if (actor.role === 'manager') {
+        const changes: string[] = [];
+        if (body.active === false && target.active) {
+          target.active = false;
+          changes.push(`disabled employee account ${target.email}`);
+        }
+        if (nextEmployeeId !== undefined) {
+          target.employeeId = nextEmployeeId || undefined;
+          changes.push(
+            nextEmployeeId
+              ? `linked employee profile "${linkedEmployeeName}" (${nextEmployeeId}) to ${target.email}`
+              : `unlinked employee profile from ${target.email}`
+          );
+        }
+
         appendAuditLog(
           db,
           actor,
-          'USER_DISABLED_BY_MANAGER',
+          nextEmployeeId !== undefined && body.active === undefined
+            ? nextEmployeeId
+              ? 'USER_PROFILE_LINKED'
+              : 'USER_PROFILE_UNLINKED'
+            : 'USER_DISABLED_BY_MANAGER',
           'User',
           target.id,
-          `Manager disabled employee account ${target.email}.`
+          `Manager ${changes.join(' and ') || `updated ${target.email}`}.`
         );
         writeDb(db);
         const { passwordHash: _ph, ...safe } = target;
@@ -5443,6 +5529,9 @@ export function createApiRouter() {
       if (typeof body.active === 'boolean') target.active = body.active;
       if (body.role) target.role = body.role;
       if (body.name) target.name = body.name;
+      if (nextEmployeeId !== undefined) {
+        target.employeeId = nextEmployeeId || undefined;
+      }
       if (body.password !== undefined && String(body.password).length > 0) {
         const pwPolicy = validatePasswordPolicy(String(body.password));
         if (!pwPolicy.isValid) {
@@ -5451,13 +5540,27 @@ export function createApiRouter() {
         }
         target.passwordHash = hashPassword(String(body.password));
       }
+      const profileNote =
+        nextEmployeeId !== undefined
+          ? nextEmployeeId
+            ? `, linkedProfile=${linkedEmployeeName} (${nextEmployeeId})`
+            : ', linkedProfile=none'
+          : '';
       appendAuditLog(
         db,
         actor,
-        'USER_UPDATED',
+        nextEmployeeId !== undefined &&
+          body.active === undefined &&
+          body.role === undefined &&
+          body.name === undefined &&
+          body.password === undefined
+          ? nextEmployeeId
+            ? 'USER_PROFILE_LINKED'
+            : 'USER_PROFILE_UNLINKED'
+          : 'USER_UPDATED',
         'User',
         target.id,
-        `Updated user ${target.email} (active=${target.active}, role=${target.role}).`
+        `Updated user ${target.email} (active=${target.active}, role=${target.role}${profileNote}).`
       );
       writeDb(db);
       const { passwordHash: _ph, ...safe } = target;

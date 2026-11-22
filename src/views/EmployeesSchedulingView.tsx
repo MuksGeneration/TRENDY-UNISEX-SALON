@@ -23,6 +23,7 @@ import {
   ExternalLink,
   FileClock,
   KeyRound,
+  Link2,
 } from 'lucide-react';
 import {
   apiFetch,
@@ -35,7 +36,7 @@ import { evaluatePasswordStrength } from '../lib/passwordPolicy';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
 import { PasswordStrengthMeter } from '../components/PasswordStrengthMeter';
-import type { CommissionLedgerEntry, EmployeeRecord, EmployeeStatus, SessionUser } from '../types';
+import type { CommissionLedgerEntry, EmployeeRecord, EmployeeStatus, SessionUser, UserRole } from '../types';
 
 interface EmployeesSchedulingViewProps {
   mode: 'employees' | 'scheduling' | 'attendance';
@@ -188,6 +189,11 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   onProfileSaved,
 }) => {
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
+  const [systemUsers, setSystemUsers] = useState<
+    Array<{ id: string; name: string; email: string; role: UserRole; employeeId?: string; active: boolean }>
+  >([]);
+  const [linkedUserId, setLinkedUserId] = useState('');
+  const [initialLinkedUserId, setInitialLinkedUserId] = useState('');
   const [schedules, setSchedules] = useState<
     Array<{
       id: string;
@@ -304,14 +310,18 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
 
   const load = async () => {
     try {
-      const [eRes, sRes, aRes] = await Promise.all([
+      const [eRes, sRes, aRes, uRes] = await Promise.all([
         apiFetch<{ employees: EmployeeRecord[] }>('/api/employees'),
         apiFetch<{ schedules: typeof schedules }>('/api/schedules'),
         apiFetch<{ attendance: typeof attendance }>('/api/attendance'),
+        canManage
+          ? apiFetch<{ users: typeof systemUsers }>('/api/users').catch(() => ({ users: [] }))
+          : Promise.resolve({ users: [] }),
       ]);
       setEmployees(eRes.employees);
       setSchedules(sRes.schedules);
       setAttendance(aRes.attendance);
+      setSystemUsers(uRes.users || []);
       if (eRes.employees.length > 0) {
         if (!schEmpId) setSchEmpId(eRes.employees[0].id);
         if (!attEmpId) setAttEmpId(eRes.employees[0].id);
@@ -372,6 +382,8 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setProfileCurrentPassword('');
     setProfileNewPassword('');
     setProfileConfirmPassword('');
+    setLinkedUserId('');
+    setInitialLinkedUserId('');
     setShowEmpModal(true);
   };
 
@@ -440,6 +452,9 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setProfileCurrentPassword('');
     setProfileNewPassword('');
     setProfileConfirmPassword('');
+    const currentLinkedUser = systemUsers.find((u) => u.employeeId === emp.id);
+    setLinkedUserId(currentLinkedUser?.id || '');
+    setInitialLinkedUserId(currentLinkedUser?.id || '');
     setShowEmpModal(true);
   };
 
@@ -584,6 +599,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
       }
 
       let saveRes: { employee: EmployeeRecord; driveWarning?: string };
+      let actionMsg = '';
       if (editingEmpId) {
         saveRes = await apiFetch<{ employee: EmployeeRecord; driveWarning?: string }>(
           `/api/employees/${editingEmpId}`,
@@ -592,33 +608,53 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
             body: JSON.stringify(payload),
           }
         );
-        setMsg(
-          wantsPasswordUpdate
-            ? `Updated profile and account password for ${empName.trim()}.`
-            : saveRes.driveWarning
-              ? `Updated profile for ${empName.trim()}.`
-              : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-                ? `Updated profile for ${empName.trim()} and synced media to Google Drive.`
-                : `Updated profile for ${empName.trim()}.`
-        );
+        actionMsg = wantsPasswordUpdate
+          ? `Updated profile and account password for ${empName.trim()}.`
+          : saveRes.driveWarning
+            ? `Updated profile for ${empName.trim()}.`
+            : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
+              ? `Updated profile for ${empName.trim()} and synced media to Google Drive.`
+              : `Updated profile for ${empName.trim()}.`;
       } else {
         const endpoint = isEmployeeSelf ? '/api/employees/me' : '/api/employees';
         saveRes = await apiFetch<{ employee: EmployeeRecord; driveWarning?: string }>(endpoint, {
           method: 'POST',
           body: JSON.stringify(payload),
         });
-        setMsg(
-          isEmployeeSelf
-            ? wantsPasswordUpdate
-              ? 'Your employee profile and new password have been saved.'
-              : 'Your employee profile has been saved.'
-            : saveRes.driveWarning
-              ? `Registered new employee: ${empName.trim()}.`
-              : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
-                ? `Registered ${empName.trim()} and stored photo/ID documents on Google Drive.`
-                : `Registered new employee: ${empName.trim()}.`
-        );
+        if (!isEmployeeSelf) {
+          setEditingEmpId(saveRes.employee.id);
+        }
+        actionMsg = isEmployeeSelf
+          ? wantsPasswordUpdate
+            ? 'Your employee profile and new password have been saved.'
+            : 'Your employee profile has been saved.'
+          : saveRes.driveWarning
+            ? `Registered new employee: ${empName.trim()}.`
+            : googleConnected && (empAvatarUrl || empIdFrontUrl || empIdBackUrl)
+              ? `Registered ${empName.trim()} and stored photo/ID documents on Google Drive.`
+              : `Registered new employee: ${empName.trim()}.`;
       }
+
+      if (canManage && linkedUserId !== initialLinkedUserId) {
+        if (initialLinkedUserId) {
+          await apiFetch(`/api/users/${initialLinkedUserId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ employeeId: null }),
+          });
+        }
+        if (linkedUserId) {
+          await apiFetch(`/api/users/${linkedUserId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ employeeId: saveRes.employee.id }),
+          });
+          const linkedAccount = systemUsers.find((u) => u.id === linkedUserId);
+          actionMsg = `${actionMsg} Linked to user ${linkedAccount?.email || linkedUserId}.`;
+        } else if (initialLinkedUserId) {
+          actionMsg = `${actionMsg} Unlinked previous user account.`;
+        }
+      }
+
+      setMsg(actionMsg);
       if (saveRes.driveWarning) {
         setError(saveRes.driveWarning);
       }
@@ -1181,6 +1217,24 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                         </span>
                       </span>
                     </div>
+                    {canManage && (() => {
+                      const linkedAccount = systemUsers.find((u) => u.employeeId === emp.id);
+                      return (
+                        <div className="flex items-center gap-1.5 text-[11px] pt-0.5">
+                          <Link2 className="w-3.5 h-3.5 text-[#E83B84] shrink-0" />
+                          <span>
+                            Linked User:{' '}
+                            {linkedAccount ? (
+                              <span className="font-mono font-semibold text-[#1D1717]">
+                                {linkedAccount.email} ({linkedAccount.role === 'owner' ? 'Admin' : linkedAccount.role})
+                              </span>
+                            ) : (
+                              <span className="text-[#1D1717]/50 italic">Not linked</span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {emp.summary && (
@@ -1987,6 +2041,47 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                       <span>Eligible for daily UGX 2,500 lunch deduction</span>
                     </label>
                   </div>
+
+                  {canManage && systemUsers.length > 0 && (
+                    <div className="sm:col-span-2 rounded-xl border border-[#1D1717]/15 bg-[#F8EEEB]/65 p-3 space-y-1.5">
+                      <label className="font-semibold text-[#1D1717] flex items-center gap-1.5">
+                        <Link2 className="w-3.5 h-3.5 text-[#E83B84]" />
+                        Link Profile to Created User Account (Optional)
+                      </label>
+                      <select
+                        value={linkedUserId}
+                        onChange={(e) => setLinkedUserId(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-medium"
+                      >
+                        <option value="">— No Linked Login Account —</option>
+                        {systemUsers
+                          .filter((u) => isOwner || u.role !== 'owner')
+                          .map((u) => {
+                            const linkedElsewhere =
+                              Boolean(u.employeeId) && u.employeeId !== editingEmpId;
+                            const otherEmp = linkedElsewhere
+                              ? employees.find((item) => item.id === u.employeeId)
+                              : undefined;
+                            return (
+                              <option
+                                key={u.id}
+                                value={u.id}
+                                disabled={linkedElsewhere}
+                              >
+                                {u.name} ({u.email}) —{' '}
+                                {u.role === 'owner' ? 'Owner / Admin' : u.role}
+                                {linkedElsewhere
+                                  ? ` [Linked to ${otherEmp?.fullName || u.employeeId}]`
+                                  : ''}
+                              </option>
+                            );
+                          })}
+                      </select>
+                      <p className="text-[11px] text-[#1D1717]/60">
+                        Connects this staff profile to a created login account so they can view their schedule, attendance, commissions, and personal documents.
+                      </p>
+                    </div>
+                  )}
                 </>
               )}
               {editingEmpId && (
