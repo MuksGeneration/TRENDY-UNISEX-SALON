@@ -12,6 +12,11 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, formatUGX } from '../lib/api';
+import {
+  getSalonTodayIso,
+  msUntilNextSalonMidnight,
+  SALON_MIDNIGHT_OPERATING_HOURS,
+} from '../lib/date';
 import type { SalonBranding } from '../types';
 
 interface PublicStylist {
@@ -76,7 +81,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   onBackToLogin,
   onBookingCreated,
 }) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const [today, setToday] = useState<string>(() => getSalonTodayIso());
 
   const [branding, setBranding] = useState<SalonBranding & { operatingHours?: string }>(
     initialBranding || {
@@ -102,10 +107,23 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [serviceSearch, setServiceSearch] = useState('');
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [selectedStylistId, setSelectedStylistId] = useState<string>('any');
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  const [selectedDate, setSelectedDate] = useState<string>(() => getSalonTodayIso());
   const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [selectedTime, setSelectedTime] = useState<string>('');
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextToday = getSalonTodayIso();
+      setToday((prev) => {
+        if (prev !== nextToday) {
+          setSelectedDate((cur) => (cur === prev ? nextToday : cur));
+        }
+        return nextToday;
+      });
+    }, msUntilNextSalonMidnight());
+    return () => window.clearTimeout(timer);
+  }, [today]);
 
   const [clientName, setClientName] = useState('');
   const [clientPhone, setClientPhone] = useState('');
@@ -901,7 +919,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5 text-[#F3BFD3]" />{' '}
-                {branding.operatingHours || 'Mon - Sun: 08:00 AM - 09:00 PM'}
+                {branding.operatingHours || SALON_MIDNIGHT_OPERATING_HOURS}
               </span>
             </div>
           </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, Clock, Plus, UserPlus, Send, CheckCircle2, Search, Copy } from 'lucide-react';
 import { apiFetch, formatUGX } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import { ClientBookingView } from './ClientBookingView';
 import type {
   AppointmentRecord,
@@ -44,7 +45,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 }) => {
   const [tab, setTab] = useState<'bookings' | 'walkins' | 'client-booking'>('bookings');
   const [calendarMode, setCalendarMode] = useState<'day' | 'week' | 'month'>('day');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedDate, setSelectedDate] = useState(() => getSalonTodayIso());
   const [stylistFilter, setStylistFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -67,7 +68,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [newCustPhone, setNewCustPhone] = useState('');
   const [bookingEmployeeId, setBookingEmployeeId] = useState('');
   const [bookingServiceIds, setBookingServiceIds] = useState<string[]>([]);
-  const [bookingDate, setBookingDate] = useState(new Date().toISOString().slice(0, 10));
+  const [bookingDate, setBookingDate] = useState(() => getSalonTodayIso());
   const [bookingTime, setBookingTime] = useState('10:00');
   const [bookingDuration, setBookingDuration] = useState(60);
   const [bookingNotes, setBookingNotes] = useState('');

@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import type { SessionPayload } from './auth.ts';
 import { getEmployeeCommissionSummary } from './commissionEngine.ts';
+import { todayIsoDate } from './db.ts';
 import type { SalonDatabase } from './types.ts';
 
 function getAiClient(): GoogleGenAI {
@@ -15,20 +16,20 @@ function getAiClient(): GoogleGenAI {
 }
 
 function buildRoleScopedContext(db: SalonDatabase, user: SessionPayload) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIsoDate();
   const monthPrefix = today.slice(0, 7);
 
-  // Compute week start (Monday)
-  const nowDate = new Date();
-  const dayOfWeek = nowDate.getDay();
+  // Compute week start (Monday) anchored strictly to salon business day
+  const nowAnchor = new Date(`${today}T00:00:00Z`);
+  const dayOfWeek = nowAnchor.getUTCDay();
   const diffToMon = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-  const monday = new Date(nowDate);
-  monday.setDate(nowDate.getDate() + diffToMon);
+  const monday = new Date(nowAnchor);
+  monday.setUTCDate(nowAnchor.getUTCDate() + diffToMon);
   const weekStart = monday.toISOString().slice(0, 10);
 
   // Tomorrow ISO date
-  const tmr = new Date(nowDate);
-  tmr.setDate(nowDate.getDate() + 1);
+  const tmr = new Date(nowAnchor);
+  tmr.setUTCDate(nowAnchor.getUTCDate() + 1);
   const tomorrow = tmr.toISOString().slice(0, 10);
 
   if (user.role === 'employee') {

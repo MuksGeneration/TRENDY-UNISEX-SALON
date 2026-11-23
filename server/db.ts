@@ -32,8 +32,28 @@ function hashDefaultPassword(password: string): string {
   return `${salt}:${derived}`;
 }
 
-export function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+export const SALON_TIMEZONE = process.env.SALON_TIMEZONE?.trim() || 'Africa/Kampala';
+export const DEFAULT_OPERATING_HOURS = 'Mon - Sun: 08:00 AM - 12:00 AM (Midnight)';
+
+export function todayIsoDate(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SALON_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+export function currentSalonMinutes(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: SALON_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24;
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  return hour * 60 + minute;
 }
 
 export function createInitialDatabase(): SalonDatabase {
@@ -407,7 +427,7 @@ export function createInitialDatabase(): SalonDatabase {
       promotionalBannerUrl: '/assets/aistudio/LADY_JOAN_BEAUTY___BARBER_LOUNGE_dcf44bc3.jpg',
       backgroundImageUrl: '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
       currency: 'UGX',
-      operatingHours: 'Mon - Sun: 08:00 AM - 09:00 PM',
+      operatingHours: DEFAULT_OPERATING_HOURS,
       defaultAppointmentDuration: 60,
       cancellationPolicy: 'Please notify at least 2 hours prior to scheduled appointment time.',
       taxEnabled: false,
@@ -484,6 +504,13 @@ function normalizeLoadedDb(db: SalonDatabase): boolean {
   }
   if (!db.settings.socialHandle) {
     db.settings.socialHandle = '@Trendyunisex.salon';
+    settingsBackfilled = true;
+  }
+  if (
+    !db.settings.operatingHours ||
+    db.settings.operatingHours === 'Mon - Sun: 08:00 AM - 09:00 PM'
+  ) {
+    db.settings.operatingHours = DEFAULT_OPERATING_HOURS;
     settingsBackfilled = true;
   }
   if (!Array.isArray(db.settings.socialPlatforms)) {

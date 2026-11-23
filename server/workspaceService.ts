@@ -533,7 +533,12 @@ export async function createSalonGoogleSpreadsheet(
     },
     body: JSON.stringify({
       properties: {
-        title: `Trendy Unisex Salon Database (${new Date().toISOString().slice(0, 10)})`,
+        title: `Trendy Unisex Salon Database (${new Intl.DateTimeFormat('en-CA', {
+          timeZone: process.env.SALON_TIMEZONE?.trim() || 'Africa/Kampala',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(new Date())})`,
       },
       sheets: WORKSHEET_TITLES.map((title) => ({
         properties: { title },

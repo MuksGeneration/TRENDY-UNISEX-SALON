@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts';
 import { apiFetch, exportReportToPdf, exportRowsToExcel, formatUGX } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import type { CommissionLedgerEntry, EmployeeRecord, ExpenseRecord, POSTransactionRecord, SessionUser } from '../types';
 
 interface MonthlyTrendPoint {
@@ -81,7 +82,7 @@ interface ReportsResponse {
 }
 
 export const ReportsView: React.FC<{ user: SessionUser }> = ({ user }) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getSalonTodayIso();
   const [startDate, setStartDate] = useState(`${today.slice(0, 7)}-01`);
   const [endDate, setEndDate] = useState(today);
   const [employeeId, setEmployeeId] = useState('');

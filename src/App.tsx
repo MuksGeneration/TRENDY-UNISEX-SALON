@@ -69,6 +69,7 @@ const DEFAULT_BRANDING: SalonBranding = {
   backgroundImageUrl:
     '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
   salonLogoUrl: '',
+  operatingHours: 'Mon - Sun: 08:00 AM - 12:00 AM (Midnight)',
 };
 
 const ViewLoader: React.FC<{ fullScreen?: boolean; label?: string }> = ({

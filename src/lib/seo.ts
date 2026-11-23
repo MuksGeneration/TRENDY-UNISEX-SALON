@@ -290,7 +290,7 @@ export function applySeoMetadata({
                 'Sunday',
               ],
               opens: '08:00',
-              closes: '21:00',
+              closes: '00:00',
             },
           ],
           potentialAction: {

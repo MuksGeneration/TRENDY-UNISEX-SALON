@@ -25,6 +25,7 @@ import {
   YAxis,
 } from 'recharts';
 import { apiFetch, downloadReceiptPdf, formatUGX } from '../lib/api';
+import { getSalonTodayIso, msUntilNextSalonMidnight } from '../lib/date';
 import type { NavSection, POSTransactionRecord, SalonBranding, SessionUser } from '../types';
 
 interface DashboardViewProps {
@@ -158,9 +159,9 @@ interface DashboardResponse {
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, onNavigate }) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const [startDate, setStartDate] = useState(`${today.slice(0, 7)}-01`);
-  const [endDate, setEndDate] = useState(today);
+  const [today, setToday] = useState(() => getSalonTodayIso());
+  const [startDate, setStartDate] = useState(() => `${getSalonTodayIso().slice(0, 7)}-01`);
+  const [endDate, setEndDate] = useState(() => getSalonTodayIso());
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
@@ -185,7 +186,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
 
   useEffect(() => {
     void loadDashboard();
-  }, [startDate, endDate]);
+  }, [startDate, endDate, today]);
+
+  // Automatically close the business day and refresh metrics right at 12:00 AM midnight (EAT)
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextToday = getSalonTodayIso();
+      if (nextToday !== today) {
+        setToday(nextToday);
+        setEndDate((prev) => (prev === today ? nextToday : prev));
+        setStartDate((prev) => {
+          if (prev === today) return nextToday;
+          if (nextToday.slice(0, 7) !== today.slice(0, 7) && prev === `${today.slice(0, 7)}-01`) {
+            return `${nextToday.slice(0, 7)}-01`;
+          }
+          return prev;
+        });
+      }
+    }, msUntilNextSalonMidnight());
+    return () => window.clearTimeout(timer);
+  }, [today]);
 
   const handleLoadSampleDay = async () => {
     setActionMsg('');
@@ -392,7 +412,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
         <div>
           <h2 className="text-2xl font-bold text-[#1D1717]">Business Overview</h2>
           <p className="text-xs text-[#1D1717]/65 mt-0.5">
-            Live figures computed strictly from stored Trendy Unisex Salon records &middot; Today: {data.today}
+            Live figures computed strictly from stored Trendy Unisex Salon records &middot; Today: {data.today} &middot; Each day closes at 12:00 AM (Midnight)
           </p>
         </div>
 

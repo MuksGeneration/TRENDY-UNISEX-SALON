@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Wallet, Plus, CheckCircle2, FileDown } from 'lucide-react';
 import { apiFetch, exportReportToPdf, formatUGX } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import type {
   CommissionLedgerEntry,
   CommissionPaymentRecord,
@@ -33,7 +34,7 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
 
   // Policy modal (Owner only)
   const [showPolicyModal, setShowPolicyModal] = useState(false);
-  const [effDate, setEffDate] = useState(new Date().toISOString().slice(0, 10));
+  const [effDate, setEffDate] = useState(() => getSalonTodayIso());
   const [plaitingPct, setPlaitingPct] = useState(50);
   const [blowDryPct, setBlowDryPct] = useState(30);
   const [otherPct, setOtherPct] = useState(40);
@@ -44,7 +45,7 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
   const [payEmp, setPayEmp] = useState<SummaryRow | null>(null);
   const [payAmount, setPayAmount] = useState(0);
   const [payMethod, setPayMethod] = useState<PaymentMethod>('Cash');
-  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payDate, setPayDate] = useState(() => getSalonTodayIso());
   const [payNotes, setPayNotes] = useState('');
 
   // Commission adjustment modal (Owner only)

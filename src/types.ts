@@ -384,6 +384,7 @@ export interface SalonBranding {
   promotionalBannerUrl?: string;
   backgroundImageUrl?: string;
   salonLogoUrl?: string;
+  operatingHours?: string;
 }
 
 export interface SalonSettings {

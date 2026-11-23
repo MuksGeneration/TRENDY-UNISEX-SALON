@@ -82,9 +82,19 @@ import type {
   UserRole,
 } from './types.ts';
 
+const MIDNIGHT_CLOSE_MINUTES = 24 * 60;
+
 function timeToMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
   return (h || 0) * 60 + (m || 0);
+}
+
+function resolveClosingMinutes(startMinutes: number, endHhmm: string): number {
+  const parsed = timeToMinutes(endHhmm);
+  if (endHhmm === '24:00' || (endHhmm === '00:00' && startMinutes > 0) || (parsed === 0 && startMinutes > 0)) {
+    return MIDNIGHT_CLOSE_MINUTES;
+  }
+  return parsed;
 }
 
 function makeId(prefix: string): string {
@@ -886,9 +896,16 @@ export function createApiRouter() {
           ? durationMinutes
           : selectedServices.reduce((s, srv) => s + srv.durationMinutes, 0) || 60;
 
-      // Double-booking prevention
+      // Midnight closing & double-booking prevention
       const newStart = timeToMinutes(startTime);
       const newEnd = newStart + calcDuration;
+      if (newEnd > MIDNIGHT_CLOSE_MINUTES) {
+        res.status(400).json({
+          error:
+            'Each day closes at midnight (12:00 AM). Please choose a start time so the service finishes by 00:00.',
+        });
+        return;
+      }
       const conflict = db.appointments.find((a) => {
         if (a.employeeId !== employeeId || a.date !== date) return false;
         if (['Cancelled', 'No Show', 'Completed'].includes(a.status)) return false;
@@ -1018,6 +1035,13 @@ export function createApiRouter() {
       if (date || startTime || employeeId) {
         const newStart = timeToMinutes(targetTime);
         const newEnd = newStart + appt.durationMinutes;
+        if (newEnd > MIDNIGHT_CLOSE_MINUTES) {
+          res.status(400).json({
+            error:
+              'Each day closes at midnight (12:00 AM). Please choose a time where the appointment finishes by 00:00.',
+          });
+          return;
+        }
         const conflict = db.appointments.find((a) => {
           if (a.id === appt.id) return false;
           if (a.employeeId !== appt.employeeId || a.date !== targetDate) return false;
@@ -2103,7 +2127,9 @@ export function createApiRouter() {
 
       let hoursWorked = 0;
       if (clockIn && clockOut) {
-        const diff = timeToMinutes(clockOut) - timeToMinutes(clockIn);
+        const startMin = timeToMinutes(clockIn);
+        const endMin = resolveClosingMinutes(startMin, clockOut);
+        const diff = endMin - startMin;
         hoursWorked = Math.max(0, Number((diff / 60).toFixed(2)));
       }
 
@@ -5722,6 +5748,7 @@ export function createApiRouter() {
         db.settings.backgroundImageUrl ||
         '/assets/aistudio/___Kang_Huda_Official_11_Oct_09_51.__iPhone_17_-_Auto_By_Kang_Huda_Official___93bd0b34.jpg',
       salonLogoUrl: db.settings.salonLogoUrl || '',
+      operatingHours: db.settings.operatingHours,
     });
   });
 
@@ -5752,6 +5779,13 @@ export function createApiRouter() {
     '19:00',
     '19:30',
     '20:00',
+    '20:30',
+    '21:00',
+    '21:30',
+    '22:00',
+    '22:30',
+    '23:00',
+    '23:30',
   ];
 
   function isStylistFreeAtSlot(
@@ -5761,6 +5795,11 @@ export function createApiRouter() {
     startTime: string,
     durationMinutes: number
   ): { free: boolean; reason?: string } {
+    const newStart = timeToMinutes(startTime);
+    const newEnd = newStart + Math.max(15, durationMinutes);
+    if (newEnd > MIDNIGHT_CLOSE_MINUTES) {
+      return { free: false, reason: 'Closes at midnight' };
+    }
     const emp = db.employees.find(
       (e) => e.id === employeeId && e.active && resolveEmployeeStatus(e) === 'Active'
     );
@@ -5773,8 +5812,6 @@ export function createApiRouter() {
     if (dayOff) {
       return { free: false, reason: 'Day Off' };
     }
-    const newStart = timeToMinutes(startTime);
-    const newEnd = newStart + Math.max(15, durationMinutes);
     const conflict = db.appointments.find((a) => {
       if (a.employeeId !== employeeId || a.date !== date) return false;
       if (['Cancelled', 'No Show', 'Completed'].includes(a.status)) return false;
@@ -5875,6 +5912,14 @@ export function createApiRouter() {
           reason: check.reason,
         };
       }
+      if (timeToMinutes(time) + duration > MIDNIGHT_CLOSE_MINUTES) {
+        return {
+          time,
+          available: false,
+          availableStylistCount: 0,
+          reason: 'Closes at midnight',
+        };
+      }
       const freeCount = activeStylists.filter(
         (emp) => isStylistFreeAtSlot(db, emp.id, date, time, duration).free
       ).length;
@@ -5931,6 +5976,13 @@ export function createApiRouter() {
       selectedServices.reduce((sum, s) => sum + s.durationMinutes, 0) ||
       db.settings.defaultAppointmentDuration ||
       60;
+    if (timeToMinutes(startTime) + calcDuration > MIDNIGHT_CLOSE_MINUTES) {
+      res.status(400).json({
+        error:
+          'Each day closes at midnight (12:00 AM). Please choose an earlier start time so your service finishes by midnight.',
+      });
+      return;
+    }
     const estimatedTotal = selectedServices.reduce((sum, s) => sum + s.price, 0);
 
     let chosenStylist: Employee | undefined;

@@ -32,6 +32,7 @@ import {
   fetchDriveMediaBlobUrl,
   formatUGX,
 } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import { evaluatePasswordStrength } from '../lib/passwordPolicy';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
@@ -241,7 +242,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   const [empEmergencyName, setEmpEmergencyName] = useState('');
   const [empEmergencyPhone, setEmpEmergencyPhone] = useState('');
   const [empAvatarUrl, setEmpAvatarUrl] = useState('');
-  const [empHireDate, setEmpHireDate] = useState(new Date().toISOString().slice(0, 10));
+  const [empHireDate, setEmpHireDate] = useState(() => getSalonTodayIso());
   const [empSpecialties, setEmpSpecialties] = useState('');
   const [empShiftStart, setEmpShiftStart] = useState('08:00');
   const [empShiftEnd, setEmpShiftEnd] = useState('20:00');
@@ -289,7 +290,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
 
   // Schedule form
   const [schEmpId, setSchEmpId] = useState('');
-  const [schDate, setSchDate] = useState(new Date().toISOString().slice(0, 10));
+  const [schDate, setSchDate] = useState(() => getSalonTodayIso());
   const [schStart, setSchStart] = useState('08:00');
   const [schEnd, setSchEnd] = useState('20:00');
   const [schDayOff, setSchDayOff] = useState(false);
@@ -297,7 +298,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
 
   // Attendance form
   const [attEmpId, setAttEmpId] = useState('');
-  const [attDate, setAttDate] = useState(new Date().toISOString().slice(0, 10));
+  const [attDate, setAttDate] = useState(() => getSalonTodayIso());
   const [attIn, setAttIn] = useState('08:00');
   const [attOut, setAttOut] = useState('20:00');
   const [attStatus, setAttStatus] = useState<'Present' | 'Late' | 'Absent' | 'Approved Leave'>('Present');
@@ -367,7 +368,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpEmergencyName('');
     setEmpEmergencyPhone('');
     setEmpAvatarUrl('');
-    setEmpHireDate(new Date().toISOString().slice(0, 10));
+    setEmpHireDate(getSalonTodayIso());
     setEmpSpecialties('');
     setEmpShiftStart('08:00');
     setEmpShiftEnd('20:00');
@@ -405,7 +406,7 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     setEmpEmergencyName('');
     setEmpEmergencyPhone('');
     setEmpAvatarUrl('');
-    setEmpHireDate(new Date().toISOString().slice(0, 10));
+    setEmpHireDate(getSalonTodayIso());
     setEmpSpecialties('');
     setEmpShiftStart('08:00');
     setEmpShiftEnd('20:00');

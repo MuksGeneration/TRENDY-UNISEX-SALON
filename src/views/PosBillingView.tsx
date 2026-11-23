@@ -12,6 +12,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { apiFetch, downloadReceiptPdf, formatUGX } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import { ConfirmModal } from '../components/ConfirmModal';
 import type {
   CustomerRecord,
@@ -77,7 +78,7 @@ export const PosBillingView: React.FC<PosBillingViewProps> = ({
 
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [guestName, setGuestName] = useState('Walk-in Guest');
-  const [txDate, setTxDate] = useState(new Date().toISOString().slice(0, 10));
+  const [txDate, setTxDate] = useState(() => getSalonTodayIso());
   const [cart, setCart] = useState<CartLine[]>([]);
   const [discountTotal, setDiscountTotal] = useState(0);
   const [tipAmount, setTipAmount] = useState(0);

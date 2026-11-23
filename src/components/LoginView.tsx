@@ -147,6 +147,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ branding, onSuccess, onOpe
         <div className="relative z-10 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-white/80 border-t border-white/15 pt-4">
           <span className="font-mono font-semibold text-[#F3BFD3]">Book: {bookingPhone}</span>
           <span aria-hidden="true">&middot;</span>
+          <span>{branding?.operatingHours || 'Mon - Sun: 08:00 AM - 12:00 AM (Midnight)'}</span>
+          <span aria-hidden="true">&middot;</span>
           <span>{socialHandle} ({socialPlatforms})</span>
           <span aria-hidden="true">&middot;</span>
           <span>Currency: Uganda Shillings (UGX)</span>

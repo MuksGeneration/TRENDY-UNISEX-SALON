@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { apiFetch, exportReportToPdf, exportRowsToExcel, formatUGX } from '../lib/api';
+import { getSalonTodayIso } from '../lib/date';
 import type { ExpenseRecord, PaymentMethod, SessionUser, StockItem } from '../types';
 
 interface RestockReportLine {
@@ -54,7 +55,7 @@ export const ExpensesInventoryView: React.FC<{
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [expCategories, setExpCategories] = useState<string[]>([]);
   const [showExpModal, setShowExpModal] = useState(false);
-  const [expDate, setExpDate] = useState(new Date().toISOString().slice(0, 10));
+  const [expDate, setExpDate] = useState(() => getSalonTodayIso());
   const [expCat, setExpCat] = useState('Salon supplies');
   const [expDesc, setExpDesc] = useState('');
   const [expAmt, setExpAmt] = useState(0);
