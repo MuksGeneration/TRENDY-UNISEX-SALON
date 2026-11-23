@@ -134,6 +134,42 @@ export function createExpressApp(): express.Express {
     });
   });
 
+  const resolvePublicOrigin = (req: express.Request) => {
+    const envUrl = process.env.APP_URL?.trim();
+    if (envUrl) return envUrl.replace(/\/+$/, '');
+    const rawProto =
+      req.headers['x-forwarded-proto']?.toString().split(',')[0].trim() || req.protocol || 'https';
+    const proto = rawProto === 'http' ? 'http' : 'https';
+    const rawHost =
+      req.headers['x-forwarded-host']?.toString().split(',')[0].trim() || req.get('host') || '';
+    const safeHost = /^[a-zA-Z0-9.-]+(:\d+)?$/.test(rawHost) ? rawHost : '';
+    return safeHost ? `${proto}://${safeHost}` : 'https://trendyunisexsalon.vercel.app';
+  };
+
+  app.get('/robots.txt', (req, res) => {
+    const origin = resolvePublicOrigin(req);
+    res
+      .status(200)
+      .type('text/plain; charset=utf-8')
+      .send(
+        `User-agent: *\nAllow: /\nAllow: /?view=book\nDisallow: /api/\n\nSitemap: ${origin}/sitemap.xml\n`
+      );
+  });
+
+  app.get('/sitemap.xml', (req, res) => {
+    const origin = resolvePublicOrigin(req);
+    res
+      .status(200)
+      .type('application/xml; charset=utf-8')
+      .send(
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+          `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+          `  <url>\n    <loc>${origin}/</loc>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n` +
+          `  <url>\n    <loc>${origin}/?view=book</loc>\n    <changefreq>weekly</changefreq>\n    <priority>0.9</priority>\n  </url>\n` +
+          `</urlset>\n`
+      );
+  });
+
   // Mount API routes
   app.use('/api', createApiRouter());
 

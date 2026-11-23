@@ -40,7 +40,7 @@
       "destination": "/api/index.ts"
     },
     {
-      "source": "/((?!api/|assets/|src/assets/|manifest\\.webmanifest$|sw\\.js$|workbox-|pwa-|apple-touch-icon\\.png$|icon\\.svg$).*)",
+      "source": "/((?!api/|assets/|src/assets/|manifest\\.webmanifest$|sw\\.js$|workbox-|pwa-|apple-touch-icon\\.png$|icon\\.svg$|robots\\.txt$|sitemap\\.xml$).*)",
       "destination": "/index.html"
     }
   ]

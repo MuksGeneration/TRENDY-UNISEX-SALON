@@ -4,6 +4,7 @@
  */
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { apiFetch, getSalonSessionToken, setSalonSessionToken } from './lib/api';
+import { applySeoMetadata } from './lib/seo';
 import {
   connectGoogleWorkspace,
   disconnectGoogleWorkspace,
@@ -223,6 +224,15 @@ export default function App() {
     })();
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    applySeoMetadata({
+      branding,
+      activeSection,
+      isAuthenticated: Boolean(user),
+      showClientBooking,
+    });
+  }, [branding, activeSection, user, showClientBooking]);
 
   const handleConnectGoogle = async () => {
     setWorkspaceError('');

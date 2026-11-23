@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Allow: /?view=book
+Disallow: /api/
+
+Sitemap: https://trendyunisexsalon.vercel.app/sitemap.xml
