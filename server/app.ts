@@ -143,7 +143,7 @@ export function createExpressApp(): express.Express {
     const rawHost =
       req.headers['x-forwarded-host']?.toString().split(',')[0].trim() || req.get('host') || '';
     const safeHost = /^[a-zA-Z0-9.-]+(:\d+)?$/.test(rawHost) ? rawHost : '';
-    return safeHost ? `${proto}://${safeHost}` : 'https://trendyunisexsalon.vercel.app';
+    return safeHost ? `${proto}://${safeHost}` : 'https://www.trendyunisexsalon.online';
   };
 
   app.get('/robots.txt', (req, res) => {

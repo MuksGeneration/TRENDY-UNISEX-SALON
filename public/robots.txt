@@ -3,4 +3,4 @@ Allow: /
 Allow: /?view=book
 Disallow: /api/
 
-Sitemap: https://trendyunisexsalon.vercel.app/sitemap.xml
+Sitemap: https://www.trendyunisexsalon.online/sitemap.xml
