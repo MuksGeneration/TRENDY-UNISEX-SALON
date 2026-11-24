@@ -13,6 +13,9 @@ import {
   Printer,
   X,
   CheckCircle2,
+  Clock,
+  Scissors,
+  Search,
 } from 'lucide-react';
 import {
   Bar,
@@ -191,6 +194,69 @@ interface DashboardResponse {
   recentTransactions?: POSTransactionRecord[];
 }
 
+interface EmployeeSalesHistoryItem {
+  itemId: string;
+  transactionId: string;
+  transactionReference: string;
+  createdAt: string;
+  date: string;
+  customerId?: string;
+  customerName: string;
+  cashierName: string;
+  txStatus: POSTransactionRecord['status'];
+  paymentMethods: string[];
+  itemType: 'service' | 'product';
+  name: string;
+  categoryName: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  lineTotal: number;
+  commissionRate: number | null;
+  lunchAllocation: number;
+  employeeCommission: number;
+  salonShare: number;
+  commissionStatus: string | null;
+}
+
+interface EmployeeSalesHistoryResponse {
+  date: string;
+  employee: {
+    employeeId: string;
+    fullName: string;
+    roleTitle: string;
+    avatarUrl?: string;
+    phone?: string;
+    status?: 'Active' | 'On Leave' | 'Inactive';
+    specialties?: string[];
+  };
+  summary: {
+    serviceSales: number;
+    retailSales: number;
+    totalSales: number;
+    servicesCount: number;
+    retailUnitsCount: number;
+    transactionsCount: number;
+    uniqueCustomersCount: number;
+    lunchDeduction: number;
+    netCommissionable: number;
+    commissionEarned: number;
+    salonShare: number;
+    tipsEarned: number;
+  };
+  items: EmployeeSalesHistoryItem[];
+  transactions: POSTransactionRecord[];
+  appointments: Array<{
+    id: string;
+    customerName: string;
+    serviceNames: string[];
+    startTime: string;
+    durationMinutes: number;
+    status: string;
+    source: string;
+  }>;
+}
+
 const EMPLOYEE_CHART_PALETTE = [
   '#E83B84',
   '#1D1717',
@@ -214,6 +280,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
   const [error, setError] = useState('');
   const [trendRange, setTrendRange] = useState<'week' | '14d'>('week');
   const [selectedReceipt, setSelectedReceipt] = useState<POSTransactionRecord | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<{
+    employeeId: string;
+    fullName: string;
+    date: string;
+  } | null>(null);
+  const [historyData, setHistoryData] = useState<EmployeeSalesHistoryResponse | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+
+  const openEmployeeHistory = async (employeeId: string, fullName: string, targetDate: string) => {
+    setHistoryTarget({ employeeId, fullName, date: targetDate });
+    setHistoryLoading(true);
+    setHistoryError('');
+    setHistoryData(null);
+    try {
+      const res = await apiFetch<EmployeeSalesHistoryResponse>(
+        `/api/dashboard/employee-sales-history?employeeId=${encodeURIComponent(employeeId)}&date=${encodeURIComponent(targetDate)}`
+      );
+      setHistoryData(res);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : 'Failed to load service history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!historyTarget && !selectedReceipt) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedReceipt) {
+          setSelectedReceipt(null);
+        } else if (historyTarget) {
+          setHistoryTarget(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [historyTarget, selectedReceipt]);
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -394,7 +500,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
               <div>
                 <h3 className="text-base font-bold text-[#1D1717]">My Daily Sales (Last 7 Days)</h3>
                 <p className="text-xs text-[#1D1717]/60 mt-0.5">
-                  Daily services, retail sales, and commission earned
+                  Daily services, retail sales, and commission earned &middot; Click any day to view service details
                 </p>
               </div>
               <span className="text-xs font-mono tabular-nums font-semibold text-[#E83B84]">
@@ -419,8 +525,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                     formatter={(val, name) => [formatUGX(Number(val) || 0), String(name ?? '')]}
                   />
                   <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }} />
-                  <Bar dataKey="serviceSales" name="Services (UGX)" stackId="s" fill="#E83B84" maxBarSize={36} />
-                  <Bar dataKey="retailSales" name="Retail (UGX)" stackId="s" fill="#F08BB4" maxBarSize={36} radius={[4, 4, 0, 0]} />
+                  <Bar
+                    dataKey="serviceSales"
+                    name="Services (UGX)"
+                    stackId="s"
+                    fill="#E83B84"
+                    maxBarSize={36}
+                    cursor="pointer"
+                    onClick={(barData) => {
+                      const pt = (barData as { payload?: { date?: string } })?.payload;
+                      if (pt?.date && data.employee) {
+                        void openEmployeeHistory('', data.employee.fullName || user.name, pt.date);
+                      }
+                    }}
+                  />
+                  <Bar
+                    dataKey="retailSales"
+                    name="Retail (UGX)"
+                    stackId="s"
+                    fill="#F08BB4"
+                    maxBarSize={36}
+                    radius={[4, 4, 0, 0]}
+                    cursor="pointer"
+                    onClick={(barData) => {
+                      const pt = (barData as { payload?: { date?: string } })?.payload;
+                      if (pt?.date && data.employee) {
+                        void openEmployeeHistory('', data.employee.fullName || user.name, pt.date);
+                      }
+                    }}
+                  />
                   <Bar dataKey="commissionEarned" name="Commission (UGX)" fill="#1D1717" maxBarSize={20} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -449,6 +582,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
             </div>
           )}
         </div>
+
+        <EmployeeServiceHistoryModal
+          target={historyTarget}
+          data={historyData}
+          loading={historyLoading}
+          error={historyError}
+          onClose={() => setHistoryTarget(null)}
+          onChangeDate={(nextDate) => {
+            if (historyTarget) {
+              void openEmployeeHistory(historyTarget.employeeId, historyTarget.fullName, nextDate);
+            }
+          }}
+          onRetry={() => {
+            if (historyTarget) {
+              void openEmployeeHistory(historyTarget.employeeId, historyTarget.fullName, historyTarget.date);
+            }
+          }}
+          onNavigate={onNavigate}
+        />
       </div>
     );
   }
@@ -1014,7 +1166,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
                       data={empDaily.employees}
-                      margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+                      margin={{ top: 8, right: 12, left: 0, bottom: 8 }}
                       barGap={4}
                     >
                       <CartesianGrid
@@ -1024,11 +1176,65 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                         strokeOpacity={0.08}
                       />
                       <XAxis
-                        dataKey="shortName"
-                        tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.8 }}
+                        dataKey="employeeId"
+                        interval={0}
                         axisLine={{ stroke: '#1D1717', strokeOpacity: 0.12 }}
                         tickLine={false}
-                        dy={6}
+                        height={34}
+                        tick={(tickProps: {
+                          x?: number | string;
+                          y?: number | string;
+                          payload?: { value?: string | number };
+                        }) => {
+                          const xPos = Number(tickProps.x) || 0;
+                          const yPos = Number(tickProps.y) || 0;
+                          const empId = String(tickProps.payload?.value ?? '');
+                          const emp = empDaily.employees.find((e) => e.employeeId === empId);
+                          const label = emp?.shortName || empId;
+                          const isSelected = historyTarget?.employeeId === empId && historyTarget?.date === empDaily.date;
+                          return (
+                            <g
+                              transform={`translate(${xPos},${yPos})`}
+                              style={{ cursor: 'pointer' }}
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`View ${emp?.fullName || label} service history for ${empDaily.date}`}
+                              onClick={() => {
+                                if (emp) void openEmployeeHistory(emp.employeeId, emp.fullName, empDaily.date);
+                              }}
+                              onKeyDown={(e) => {
+                                if ((e.key === 'Enter' || e.key === ' ') && emp) {
+                                  e.preventDefault();
+                                  void openEmployeeHistory(emp.employeeId, emp.fullName, empDaily.date);
+                                }
+                              }}
+                            >
+                              <title>Click to view {emp?.fullName || label}&rsquo;s service history on {empDaily.date}</title>
+                              <rect x={-44} y={0} width={88} height={28} fill="transparent" />
+                              <text
+                                x={0}
+                                y={0}
+                                dy={15}
+                                textAnchor="middle"
+                                fill={isSelected ? '#E83B84' : '#1D1717'}
+                                fontSize={11}
+                                fontWeight={600}
+                              >
+                                {label}
+                              </text>
+                              <line
+                                x1={-20}
+                                x2={20}
+                                y1={20}
+                                y2={20}
+                                stroke="#E83B84"
+                                strokeOpacity={isSelected ? 0.95 : 0.45}
+                                strokeWidth={1.25}
+                                strokeDasharray="2 2"
+                              />
+                            </g>
+                          );
+                        }}
                       />
                       <YAxis
                         tickFormatter={formatCompactUGX}
@@ -1054,7 +1260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                             <div className="bg-white border border-[#1D1717]/15 rounded-xl p-3.5 shadow-sm text-xs space-y-1.5 min-w-[220px]">
                               <div className="border-b border-[#1D1717]/10 pb-1">
                                 <div className="font-bold text-[#1D1717]">{row.fullName}</div>
-                                <div className="text-[11px] text-[#1D1717]/55">{row.roleTitle}</div>
+                                <div className="text-[11px] text-[#1D1717]/55">{row.roleTitle} &middot; Click name or bar for service history</div>
                               </div>
                               <div className="flex items-center justify-between gap-4">
                                 <span className="text-[#1D1717]/75">Service Sales ({row.servicesCount})</span>
@@ -1096,6 +1302,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                         stackId="sales"
                         fill="#E83B84"
                         maxBarSize={40}
+                        cursor="pointer"
+                        onClick={(barData) => {
+                          const row = (barData as { payload?: { employeeId?: string; fullName?: string } })?.payload;
+                          if (row?.employeeId) {
+                            void openEmployeeHistory(row.employeeId, row.fullName || row.employeeId, empDaily.date);
+                          }
+                        }}
                       />
                       <Bar
                         dataKey="retailSales"
@@ -1104,6 +1317,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                         fill="#F08BB4"
                         maxBarSize={40}
                         radius={[4, 4, 0, 0]}
+                        cursor="pointer"
+                        onClick={(barData) => {
+                          const row = (barData as { payload?: { employeeId?: string; fullName?: string } })?.payload;
+                          if (row?.employeeId) {
+                            void openEmployeeHistory(row.employeeId, row.fullName || row.employeeId, empDaily.date);
+                          }
+                        }}
                       />
                       <Bar
                         dataKey="commissionEarned"
@@ -1111,6 +1331,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                         fill="#1D1717"
                         maxBarSize={20}
                         radius={[4, 4, 0, 0]}
+                        cursor="pointer"
+                        onClick={(barData) => {
+                          const row = (barData as { payload?: { employeeId?: string; fullName?: string } })?.payload;
+                          if (row?.employeeId) {
+                            void openEmployeeHistory(row.employeeId, row.fullName || row.employeeId, empDaily.date);
+                          }
+                        }}
                       />
                     </BarChart>
                   </ResponsiveContainer>
@@ -1189,7 +1416,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                       verticalAlign="top"
                       align="right"
                       iconType="square"
-                      wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }}
+                      wrapperStyle={{ fontSize: '11px', paddingBottom: '8px', cursor: 'pointer' }}
+                      onClick={(entry) => {
+                        const empId = typeof entry?.dataKey === 'string' ? entry.dataKey : '';
+                        const meta = empDaily.employeesMeta.find((m) => m.employeeId === empId);
+                        if (meta) {
+                          void openEmployeeHistory(meta.employeeId, meta.fullName, empDaily.date);
+                        }
+                      }}
                     />
                     {empDaily.employeesMeta.map((meta, idx) => (
                       <Bar
@@ -1199,10 +1433,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
                         stackId="empWeek"
                         fill={EMPLOYEE_CHART_PALETTE[idx % EMPLOYEE_CHART_PALETTE.length]}
                         maxBarSize={42}
+                        cursor="pointer"
+                        onClick={(barData) => {
+                          const row = (barData as { payload?: { date?: string } })?.payload;
+                          const clickedDate = typeof row?.date === 'string' ? row.date : empDaily.date;
+                          void openEmployeeHistory(meta.employeeId, meta.fullName, clickedDate);
+                        }}
                       />
                     ))}
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+            )}
+
+            {empDaily.employees.length > 0 && (
+              <div className="border-t border-[#1D1717]/10 pt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <span className="text-[11px] text-[#1D1717]/60 shrink-0">
+                  Click any stylist&rsquo;s name on the chart or below for {empDaily.date} service history:
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {empDaily.employees.map((emp) => (
+                    <button
+                      key={emp.employeeId}
+                      type="button"
+                      onClick={() => void openEmployeeHistory(emp.employeeId, emp.fullName, empDaily.date)}
+                      className={`px-2.5 py-1 rounded-lg border text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                        historyTarget?.employeeId === emp.employeeId && historyTarget?.date === empDaily.date
+                          ? 'bg-[#E83B84] text-white border-[#E83B84]'
+                          : 'bg-[#F8EEEB]/60 hover:bg-[#F3BFD3]/50 text-[#1D1717] border-[#1D1717]/10'
+                      }`}
+                    >
+                      <span className="font-semibold">{emp.fullName}</span>
+                      <span className="font-mono tabular-nums text-[11px] opacity-80">
+                        {formatCompactUGX(emp.totalSales)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -1444,13 +1711,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
         )}
       </div>
 
+      {/* Employee Daily Service History Modal */}
+      <EmployeeServiceHistoryModal
+        target={historyTarget}
+        data={historyData}
+        loading={historyLoading}
+        error={historyError}
+        onClose={() => setHistoryTarget(null)}
+        onChangeDate={(nextDate) => {
+          if (historyTarget) {
+            void openEmployeeHistory(historyTarget.employeeId, historyTarget.fullName, nextDate);
+          }
+        }}
+        onRetry={() => {
+          if (historyTarget) {
+            void openEmployeeHistory(historyTarget.employeeId, historyTarget.fullName, historyTarget.date);
+          }
+        }}
+        onOpenReceipt={(tx) => setSelectedReceipt(tx)}
+        onNavigate={onNavigate}
+      />
+
       {/* Receipt Details Modal */}
       {selectedReceipt && (
         <div
-          className="fixed inset-0 z-50 bg-[#1D1717]/60 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-[60] bg-[#1D1717]/60 backdrop-blur-xs flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
           aria-label={`Receipt details for ${selectedReceipt.reference}`}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedReceipt(null);
+          }}
         >
           <div className="bg-white border border-[#1D1717]/15 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-2xl">
             <div className="px-6 py-4 border-b border-[#1D1717]/10 flex items-center justify-between bg-[#F8EEEB]/60">
@@ -1621,6 +1912,413 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+function formatEatTime(iso: string): string {
+  if (!iso) return '—';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Kampala',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(dt);
+}
+
+const EmployeeServiceHistoryModal: React.FC<{
+  target: { employeeId: string; fullName: string; date: string } | null;
+  data: EmployeeSalesHistoryResponse | null;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+  onChangeDate: (nextDate: string) => void;
+  onRetry: () => void;
+  onOpenReceipt?: (tx: POSTransactionRecord) => void;
+  onNavigate: (section: NavSection) => void;
+}> = ({ target, data, loading, error, onClose, onChangeDate, onRetry, onOpenReceipt, onNavigate }) => {
+  const [itemFilter, setItemFilter] = useState<'all' | 'service' | 'product'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    setItemFilter('all');
+    setSearchTerm('');
+  }, [target?.employeeId, target?.date]);
+
+  if (!target) return null;
+
+  const employee = data?.employee;
+  const summary = data?.summary;
+  const allItems = data?.items || [];
+  const appointments = data?.appointments || [];
+  const txLookup = new Map((data?.transactions || []).map((t) => [t.id, t]));
+
+  const filteredItems = allItems.filter((item) => {
+    if (itemFilter !== 'all' && item.itemType !== itemFilter) return false;
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      item.name.toLowerCase().includes(q) ||
+      item.customerName.toLowerCase().includes(q) ||
+      item.categoryName.toLowerCase().includes(q) ||
+      item.transactionReference.toLowerCase().includes(q)
+    );
+  });
+
+  const serviceItemsCount = allItems.filter((i) => i.itemType === 'service').length;
+  const productItemsCount = allItems.filter((i) => i.itemType === 'product').length;
+  const displayName = employee?.fullName || target.fullName;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-[#1D1717]/60 backdrop-blur-xs flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Daily service history for ${displayName} on ${target.date}`}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-white border border-[#1D1717]/15 rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+        {/* Modal Header */}
+        <div className="px-6 py-4 border-b border-[#1D1717]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#F8EEEB]/50">
+          <div className="flex items-center gap-3.5 min-w-0">
+            {employee?.avatarUrl ? (
+              <img
+                src={employee.avatarUrl}
+                alt={displayName}
+                referrerPolicy="no-referrer"
+                className="w-11 h-11 rounded-xl object-cover border border-[#1D1717]/10 shrink-0"
+              />
+            ) : (
+              <div className="w-11 h-11 rounded-xl bg-[#1D1717] text-[#F3BFD3] flex items-center justify-center text-sm font-bold shrink-0">
+                {displayName.slice(0, 2).toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h4 className="text-base font-bold text-[#1D1717] truncate">
+                {displayName} &mdash; Daily Service History
+              </h4>
+              <p className="text-xs text-[#1D1717]/65 mt-0.5 truncate">
+                <span>{employee?.roleTitle || 'Stylist'}</span>
+                {employee?.status && (
+                  <>
+                    <span aria-hidden="true"> &middot; </span>
+                    <span>{employee.status}</span>
+                  </>
+                )}
+                <span aria-hidden="true"> &middot; </span>
+                <span className="font-mono">{target.date}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+            <div className="flex items-center gap-1.5 bg-white border border-[#1D1717]/15 rounded-xl px-2.5 py-1.5 text-xs">
+              <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
+              <input
+                type="date"
+                value={target.date}
+                onChange={(e) => {
+                  if (e.target.value) onChangeDate(e.target.value);
+                }}
+                aria-label="Inspect service history date"
+                className="bg-transparent focus:outline-none font-mono text-xs"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-xl hover:bg-[#1D1717]/10 text-[#1D1717]/75 cursor-pointer"
+              aria-label="Close service history modal"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-6 overflow-y-auto space-y-5 flex-1">
+          {loading ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[1, 2, 3, 4].map((k) => (
+                  <div key={k} className="h-20 rounded-xl bg-[#F8EEEB]/60 animate-pulse" />
+                ))}
+              </div>
+              <div className="space-y-2">
+                {[1, 2, 3].map((k) => (
+                  <div key={k} className="h-12 rounded-xl bg-[#F8EEEB]/50 animate-pulse" />
+                ))}
+              </div>
+            </div>
+          ) : error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-700 flex items-center justify-between gap-3">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="px-3 py-1.5 rounded-lg bg-white border border-red-200 font-semibold hover:bg-red-100 cursor-pointer shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Summary Row */}
+              {summary && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 border-b border-[#1D1717]/10 pb-5">
+                  <div>
+                    <div className="text-[11px] font-medium text-[#1D1717]/60">Total Daily Sales</div>
+                    <div className="text-lg font-bold font-mono tabular-nums text-[#1D1717] mt-0.5">
+                      {formatUGX(summary.totalSales)}
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/60 mt-0.5">
+                      Svc {formatCompactUGX(summary.serviceSales)} &middot; Retail {formatCompactUGX(summary.retailSales)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium text-[#1D1717]/60">Services &amp; Clients</div>
+                    <div className="text-lg font-bold font-mono tabular-nums text-[#1D1717] mt-0.5">
+                      {summary.servicesCount} services
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/60 mt-0.5">
+                      {summary.uniqueCustomersCount} clients &middot; {summary.transactionsCount} receipts
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium text-[#1D1717]/60">Commission Earned</div>
+                    <div className="text-lg font-bold font-mono tabular-nums text-[#E83B84] mt-0.5">
+                      {formatUGX(summary.commissionEarned)}
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/60 mt-0.5">
+                      Net {formatCompactUGX(summary.netCommissionable)} &middot; Lunch -{formatCompactUGX(summary.lunchDeduction)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-medium text-[#1D1717]/60">Salon Share &amp; Tips</div>
+                    <div className="text-lg font-bold font-mono tabular-nums text-[#1D1717] mt-0.5">
+                      {formatUGX(summary.salonShare)}
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/60 mt-0.5">
+                      Direct tips: {formatUGX(summary.tipsEarned)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Filter & Search Bar */}
+              {allItems.length > 0 && (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="inline-flex items-center gap-1 bg-[#F8EEEB] p-1 rounded-xl border border-[#1D1717]/10 text-xs self-start">
+                    <button
+                      type="button"
+                      onClick={() => setItemFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                        itemFilter === 'all'
+                          ? 'bg-[#E83B84] text-white'
+                          : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                      }`}
+                    >
+                      All ({allItems.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setItemFilter('service')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                        itemFilter === 'service'
+                          ? 'bg-[#E83B84] text-white'
+                          : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                      }`}
+                    >
+                      Services ({serviceItemsCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setItemFilter('product')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                        itemFilter === 'product'
+                          ? 'bg-[#E83B84] text-white'
+                          : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                      }`}
+                    >
+                      Retail ({productItemsCount})
+                    </button>
+                  </div>
+
+                  <div className="relative flex-1 sm:max-w-xs">
+                    <Search className="w-3.5 h-3.5 text-[#1D1717]/45 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Filter by service, client, or receipt..."
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-[#1D1717]/15 text-xs focus:outline-none focus:border-[#E83B84]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Detailed Service History Table */}
+              {allItems.length === 0 ? (
+                <div className="py-10 px-4 text-center rounded-xl border border-dashed border-[#1D1717]/15 bg-[#F8EEEB]/35 space-y-2.5">
+                  <Scissors className="w-6 h-6 text-[#E83B84] mx-auto" />
+                  <p className="text-sm font-semibold text-[#1D1717]">
+                    No completed POS services recorded for {displayName} on {target.date}
+                  </p>
+                  <p className="text-xs text-[#1D1717]/60 max-w-md mx-auto">
+                    Services and retail sales attributed to {displayName} in POS will appear here with client, receipt, and commission details.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onNavigate('pos');
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#E83B84] text-white text-xs font-semibold hover:bg-[#d12d73] cursor-pointer"
+                  >
+                    <ShoppingBag className="w-3.5 h-3.5" />
+                    <span>Open POS &amp; Billing</span>
+                  </button>
+                </div>
+              ) : filteredItems.length === 0 ? (
+                <div className="py-8 text-center text-xs text-[#1D1717]/60 border border-dashed border-[#1D1717]/15 rounded-xl">
+                  No matching service records for the current filter.
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-[#1D1717]/10 rounded-xl">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-[#F8EEEB]/60 border-b border-[#1D1717]/10 text-[11px] font-semibold text-[#1D1717]/70">
+                        <th className="py-2.5 px-3">Time &amp; Receipt</th>
+                        <th className="py-2.5 px-3">Client</th>
+                        <th className="py-2.5 px-3">Service / Item</th>
+                        <th className="py-2.5 px-3 text-right">Qty</th>
+                        <th className="py-2.5 px-3 text-right">Amount</th>
+                        <th className="py-2.5 px-3 text-right">Commission</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1D1717]/10">
+                      {filteredItems.map((item, idx) => {
+                        const parentTx = txLookup.get(item.transactionId);
+                        const payStr = item.paymentMethods.length > 0 ? item.paymentMethods.join(' + ') : item.txStatus;
+                        return (
+                          <tr
+                            key={`${item.transactionId}-${item.itemId}-${idx}`}
+                            className="hover:bg-[#F8EEEB]/35 transition-colors"
+                          >
+                            <td className="py-2.5 px-3 align-top font-mono tabular-nums whitespace-nowrap">
+                              <div className="font-semibold text-[#1D1717]">{formatEatTime(item.createdAt)}</div>
+                              {parentTx && onOpenReceipt ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenReceipt(parentTx)}
+                                  className="text-[11px] text-[#E83B84] hover:underline cursor-pointer"
+                                  title="Open receipt breakdown"
+                                >
+                                  {item.transactionReference}
+                                </button>
+                              ) : (
+                                <div className="text-[11px] text-[#1D1717]/55">{item.transactionReference}</div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 align-top">
+                              <div className="font-medium text-[#1D1717]">{item.customerName}</div>
+                              <div className="text-[11px] text-[#1D1717]/55">{payStr}</div>
+                            </td>
+                            <td className="py-2.5 px-3 align-top">
+                              <div className="font-semibold text-[#1D1717]">{item.name}</div>
+                              <div className="text-[11px] text-[#1D1717]/55">
+                                {item.categoryName} &middot; {item.itemType === 'service' ? 'Service' : 'Retail'}
+                                {item.discount > 0 ? ` · Disc -${formatUGX(item.discount)}` : ''}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 align-top text-right font-mono tabular-nums text-[#1D1717]">
+                              {item.quantity}
+                            </td>
+                            <td className="py-2.5 px-3 align-top text-right font-mono tabular-nums font-bold text-[#1D1717] whitespace-nowrap">
+                              {formatUGX(item.lineTotal)}
+                            </td>
+                            <td className="py-2.5 px-3 align-top text-right font-mono tabular-nums whitespace-nowrap">
+                              <div className="font-semibold text-[#E83B84]">
+                                {formatUGX(item.employeeCommission)}
+                              </div>
+                              <div className="text-[11px] text-[#1D1717]/55">
+                                {item.commissionRate !== null
+                                  ? `${Math.round(item.commissionRate * 100)}%`
+                                  : '—'}
+                                {item.commissionStatus ? ` · ${item.commissionStatus}` : ''}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Appointments scheduled for that day */}
+              {appointments.length > 0 && (
+                <div className="border-t border-[#1D1717]/10 pt-4 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-xs font-bold text-[#1D1717] flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#E83B84]" />
+                      <span>Appointments on {target.date} ({appointments.length})</span>
+                    </h5>
+                  </div>
+                  <div className="divide-y divide-[#1D1717]/10 border border-[#1D1717]/10 rounded-xl">
+                    {appointments.map((apt) => (
+                      <div key={apt.id} className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[#1D1717] truncate">{apt.customerName}</div>
+                          <div className="text-[11px] text-[#1D1717]/60 truncate">
+                            {(apt.serviceNames || []).join(', ')} &middot; {apt.source}
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums shrink-0">
+                          <div className="font-semibold text-[#1D1717]">
+                            {apt.startTime} ({apt.durationMinutes}m)
+                          </div>
+                          <div className="text-[11px] text-[#E83B84]">{apt.status}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Modal Footer */}
+        <div className="px-6 py-3.5 border-t border-[#1D1717]/10 bg-[#F8EEEB]/40 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-[#1D1717]/55">
+            Salon business day closes at 12:00 AM (Midnight)
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onNavigate('commissions');
+              }}
+              className="px-3.5 py-2 rounded-xl bg-white border border-[#1D1717]/15 hover:bg-[#F8EEEB] text-xs font-semibold text-[#1D1717] cursor-pointer whitespace-nowrap"
+            >
+              View Commission Ledger
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl bg-[#1D1717] hover:bg-[#1D1717]/85 text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

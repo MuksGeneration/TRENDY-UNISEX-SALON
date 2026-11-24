@@ -981,6 +981,186 @@ export function createApiRouter() {
     });
   });
 
+  router.get('/dashboard/employee-sales-history', requireAuth, (req: AuthenticatedRequest, res) => {
+    const db = readDb();
+    const user = req.sessionUser!;
+    const today = todayIsoDate();
+    const rawDate = typeof req.query.date === 'string' ? req.query.date.slice(0, 10) : '';
+    const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : today;
+    const requestedEmpId = typeof req.query.employeeId === 'string' ? req.query.employeeId.trim() : '';
+
+    let targetEmployeeId = requestedEmpId;
+    if (user.role === 'employee') {
+      const linked = resolveEmployeeForUser(db, user);
+      const ownId = linked?.id || user.employeeId || '';
+      if (!ownId || (requestedEmpId && requestedEmpId !== ownId)) {
+        res.status(403).json({ error: 'Employees can only inspect their own service history.' });
+        return;
+      }
+      targetEmployeeId = ownId;
+    }
+
+    if (!targetEmployeeId) {
+      res.status(400).json({ error: 'employeeId is required.' });
+      return;
+    }
+
+    const emp = db.employees.find((e) => e.id === targetEmployeeId);
+    const dayTxs = db.posTransactions
+      .filter((t) => t.date === targetDate && t.status !== 'Reversed' && t.status !== 'Refunded')
+      .sort((a, b) => (a.createdAt || a.date).localeCompare(b.createdAt || b.date));
+
+    const dayLedger = db.commissionLedger.filter(
+      (c) => c.employeeId === targetEmployeeId && c.date === targetDate && c.paymentStatus !== 'Reversed'
+    );
+    const usedLedgerIdx = new Set<number>();
+
+    const items: Array<{
+      itemId: string;
+      transactionId: string;
+      transactionReference: string;
+      createdAt: string;
+      date: string;
+      customerId?: string;
+      customerName: string;
+      cashierName: string;
+      txStatus: POSTransaction['status'];
+      paymentMethods: string[];
+      itemType: 'service' | 'product';
+      name: string;
+      categoryName: string;
+      quantity: number;
+      unitPrice: number;
+      discount: number;
+      lineTotal: number;
+      commissionRate: number | null;
+      lunchAllocation: number;
+      employeeCommission: number;
+      salonShare: number;
+      commissionStatus: string | null;
+    }> = [];
+
+    const txMap = new Map<string, POSTransaction>();
+    let fallbackName = '';
+    let serviceSales = 0;
+    let retailSales = 0;
+    let servicesCount = 0;
+    let retailUnitsCount = 0;
+    const customerSet = new Set<string>();
+
+    for (const tx of dayTxs) {
+      for (const item of tx.items) {
+        if (item.employeeId !== targetEmployeeId) continue;
+        if (!fallbackName && item.employeeName) fallbackName = item.employeeName;
+        txMap.set(tx.id, tx);
+        customerSet.add(tx.customerId || tx.customerName);
+
+        if (item.itemType === 'service') {
+          serviceSales += item.lineTotal;
+          servicesCount += item.quantity || 1;
+        } else {
+          retailSales += item.lineTotal;
+          retailUnitsCount += item.quantity || 1;
+        }
+
+        let matchedIdx = dayLedger.findIndex(
+          (c, idx) =>
+            !usedLedgerIdx.has(idx) &&
+            c.transactionId === tx.id &&
+            c.serviceName === item.name &&
+            c.grossEarnings === item.lineTotal
+        );
+        if (matchedIdx === -1) {
+          matchedIdx = dayLedger.findIndex(
+            (c, idx) => !usedLedgerIdx.has(idx) && c.transactionId === tx.id && c.serviceName === item.name
+          );
+        }
+        const ledgerMatch = matchedIdx >= 0 ? dayLedger[matchedIdx] : undefined;
+        if (matchedIdx >= 0) usedLedgerIdx.add(matchedIdx);
+
+        items.push({
+          itemId: item.id,
+          transactionId: tx.id,
+          transactionReference: tx.reference,
+          createdAt: tx.createdAt,
+          date: tx.date,
+          customerId: tx.customerId,
+          customerName: tx.customerName,
+          cashierName: tx.cashierName,
+          txStatus: tx.status,
+          paymentMethods: tx.payments.map((p) => p.method),
+          itemType: item.itemType,
+          name: item.name,
+          categoryName: item.categoryName,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: item.discount,
+          lineTotal: item.lineTotal,
+          commissionRate: ledgerMatch?.commissionRate ?? item.commissionRateApplied ?? null,
+          lunchAllocation: ledgerMatch?.lunchAllocation ?? 0,
+          employeeCommission: ledgerMatch?.employeeCommission ?? 0,
+          salonShare: ledgerMatch?.salonShare ?? 0,
+          commissionStatus: ledgerMatch?.paymentStatus ?? null,
+        });
+      }
+    }
+
+    items.sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
+
+    const lunchDeduction = db.lunchDeductions
+      .filter((l) => l.employeeId === targetEmployeeId && l.date === targetDate)
+      .reduce((s, l) => s + l.amount, 0);
+    const commissionEarned = dayLedger.reduce((s, c) => s + c.employeeCommission, 0);
+    const salonShare = dayLedger.reduce((s, c) => s + c.salonShare, 0);
+    const netCommissionable = dayLedger.reduce((s, c) => s + c.netCommissionableEarnings, 0);
+    const tipsEarned = db.tips
+      .filter((t) => t.employeeId === targetEmployeeId && t.date === targetDate)
+      .reduce((s, t) => s + t.amount, 0);
+
+    const appointments = db.appointments
+      .filter((a) => a.employeeId === targetEmployeeId && a.date === targetDate)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      .map((a) => ({
+        id: a.id,
+        customerName: a.customerName,
+        serviceNames: a.serviceNames,
+        startTime: a.startTime,
+        durationMinutes: a.durationMinutes,
+        status: a.status,
+        source: a.source,
+      }));
+
+    res.json({
+      date: targetDate,
+      employee: {
+        employeeId: targetEmployeeId,
+        fullName: emp?.fullName || fallbackName || targetEmployeeId,
+        roleTitle: emp?.roleTitle || 'Stylist',
+        avatarUrl: emp?.avatarUrl,
+        phone: emp?.phone || '',
+        status: emp ? resolveEmployeeStatus(emp) : 'Active',
+        specialties: emp?.specialties || [],
+      },
+      summary: {
+        serviceSales,
+        retailSales,
+        totalSales: serviceSales + retailSales,
+        servicesCount,
+        retailUnitsCount,
+        transactionsCount: txMap.size,
+        uniqueCustomersCount: customerSet.size,
+        lunchDeduction,
+        netCommissionable,
+        commissionEarned,
+        salonShare,
+        tipsEarned,
+      },
+      items,
+      transactions: Array.from(txMap.values()),
+      appointments,
+    });
+  });
+
   // ==================== APPOINTMENTS & WALK-INS ====================
   router.get('/appointments', requireAuth, (req: AuthenticatedRequest, res) => {
     const db = readDb();
