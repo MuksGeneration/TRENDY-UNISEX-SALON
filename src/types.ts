@@ -160,6 +160,7 @@ export interface ServiceItem {
   durationMinutes: number;
   commissionRateOverride?: number;
   qualifiedEmployeeIds: string[];
+  imageUrl?: string;
   active: boolean;
 }
 

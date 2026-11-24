@@ -37,6 +37,7 @@ interface DashboardViewProps {
 interface DashboardResponse {
   roleScope: string;
   today: string;
+  salesDate?: string;
   period?: { startDate: string; endDate: string };
   hasTransactions?: boolean;
   todayMetrics?: {
@@ -109,6 +110,29 @@ interface DashboardResponse {
       isToday: boolean;
     }>;
     dailyTrend: Array<{ date: string; serviceSales: number; productSales: number; expenses: number }>;
+    dailyEmployeeSales?: {
+      date: string;
+      employees: Array<{
+        employeeId: string;
+        fullName: string;
+        shortName: string;
+        roleTitle: string;
+        avatarUrl?: string;
+        serviceSales: number;
+        retailSales: number;
+        totalSales: number;
+        servicesCount: number;
+        commissionEarned: number;
+        salonShare: number;
+      }>;
+      sevenDaySeries: Array<Record<string, string | number>>;
+      employeesMeta: Array<{
+        employeeId: string;
+        fullName: string;
+        shortName: string;
+        totalWeekSales: number;
+      }>;
+    };
     employeePerformance: Array<{
       employeeId: string;
       fullName: string;
@@ -147,7 +171,7 @@ interface DashboardResponse {
     outstandingBalance: number;
     directTips: number;
   };
-  upcomingAppointments?: Array<{
+    upcomingAppointments?: Array<{
     id: string;
     customerName: string;
     serviceNames: string[];
@@ -155,13 +179,35 @@ interface DashboardResponse {
     startTime: string;
     status: string;
   }>;
+  dailySalesTrend?: Array<{
+    date: string;
+    label: string;
+    serviceSales: number;
+    retailSales: number;
+    totalSales: number;
+    commissionEarned: number;
+    servicesCount: number;
+  }>;
   recentTransactions?: POSTransactionRecord[];
 }
+
+const EMPLOYEE_CHART_PALETTE = [
+  '#E83B84',
+  '#1D1717',
+  '#F08BB4',
+  '#A6245B',
+  '#6E575E',
+  '#F5B0CC',
+  '#4B393F',
+  '#C85A87',
+];
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, onNavigate }) => {
   const [today, setToday] = useState(() => getSalonTodayIso());
   const [startDate, setStartDate] = useState(() => `${getSalonTodayIso().slice(0, 7)}-01`);
   const [endDate, setEndDate] = useState(() => getSalonTodayIso());
+  const [salesDate, setSalesDate] = useState(() => getSalonTodayIso());
+  const [empChartMode, setEmpChartMode] = useState<'day' | '7d'>('day');
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
@@ -174,7 +220,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
     setError('');
     try {
       const res = await apiFetch<DashboardResponse>(
-        `/api/dashboard?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`
+        `/api/dashboard?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&salesDate=${encodeURIComponent(salesDate)}`
       );
       setData(res);
     } catch (err) {
@@ -186,7 +232,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
 
   useEffect(() => {
     void loadDashboard();
-  }, [startDate, endDate, today]);
+  }, [startDate, endDate, salesDate, today]);
 
   // Automatically close the business day and refresh metrics right at 12:00 AM midnight (EAT)
   useEffect(() => {
@@ -195,6 +241,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
       if (nextToday !== today) {
         setToday(nextToday);
         setEndDate((prev) => (prev === today ? nextToday : prev));
+        setSalesDate((prev) => (prev === today ? nextToday : prev));
         setStartDate((prev) => {
           if (prev === today) return nextToday;
           if (nextToday.slice(0, 7) !== today.slice(0, 7) && prev === `${today.slice(0, 7)}-01`) {
@@ -340,6 +387,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
           <MetricCard label="Today's Net Commission" value={formatUGX(todayStats.commissionEarned)} sub={`Net base: ${formatUGX(todayStats.netCommissionable)}`} accent />
           <MetricCard label="Outstanding Commission Balance" value={formatUGX(summary.outstandingBalance)} sub={`Paid to date: ${formatUGX(summary.totalPaid)}`} />
         </div>
+
+        {data.dailySalesTrend && (
+          <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-[#1D1717]">My Daily Sales (Last 7 Days)</h3>
+                <p className="text-xs text-[#1D1717]/60 mt-0.5">
+                  Daily services, retail sales, and commission earned
+                </p>
+              </div>
+              <span className="text-xs font-mono tabular-nums font-semibold text-[#E83B84]">
+                7-Day Total:{' '}
+                {formatUGX(data.dailySalesTrend.reduce((sum, d) => sum + d.totalSales, 0))}
+              </span>
+            </div>
+            <div className="h-60 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={data.dailySalesTrend} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1D1717" strokeOpacity={0.08} />
+                  <XAxis dataKey="label" tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.7 }} tickLine={false} />
+                  <YAxis
+                    tickFormatter={(v: number) => (v >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`)}
+                    tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.65, fontFamily: 'monospace' }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={52}
+                  />
+                  <Tooltip
+                    cursor={{ fill: '#F8EEEB', opacity: 0.7 }}
+                    formatter={(val, name) => [formatUGX(Number(val) || 0), String(name ?? '')]}
+                  />
+                  <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }} />
+                  <Bar dataKey="serviceSales" name="Services (UGX)" stackId="s" fill="#E83B84" maxBarSize={36} />
+                  <Bar dataKey="retailSales" name="Retail (UGX)" stackId="s" fill="#F08BB4" maxBarSize={36} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="commissionEarned" name="Commission (UGX)" fill="#1D1717" maxBarSize={20} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
 
         <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6">
           <h3 className="text-base font-bold text-[#1D1717] mb-4">My Upcoming Appointments</h3>
@@ -815,6 +902,312 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, branding, on
           </div>
         </div>
       </div>
+
+      {/* Section 3B: Daily Sales Chart per Employee */}
+      {charts.dailyEmployeeSales && (() => {
+        const empDaily = charts.dailyEmployeeSales;
+        const selectedDayTotal = empDaily.employees.reduce((sum, e) => sum + e.totalSales, 0);
+        const activeCountOnDay = empDaily.employees.filter((e) => e.totalSales > 0).length;
+        const weekTotal = empDaily.sevenDaySeries.reduce(
+          (sum, row) => sum + (Number(row.totalSales) || 0),
+          0
+        );
+
+        return (
+          <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-[#1D1717] flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#E83B84]" />
+                  <span>
+                    {empChartMode === 'day'
+                      ? `Daily Sales per Employee (${empDaily.date})`
+                      : `7-Day Daily Sales per Employee (Ending ${empDaily.date})`}
+                  </span>
+                </h3>
+                <p className="text-xs text-[#1D1717]/60 mt-0.5 font-mono tabular-nums">
+                  {empChartMode === 'day'
+                    ? `Total attributed sales: ${formatUGX(selectedDayTotal)} · ${activeCountOnDay} of ${empDaily.employees.length} stylists with sales`
+                    : `7-day team sales: ${formatUGX(weekTotal)} across ${empDaily.employeesMeta.length} stylists`}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-[#F8EEEB] border border-[#1D1717]/10 rounded-xl px-2.5 py-1 text-xs">
+                  <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
+                  <input
+                    type="date"
+                    value={salesDate}
+                    onChange={(e) => setSalesDate(e.target.value)}
+                    aria-label="Select date for daily employee sales chart"
+                    className="bg-transparent focus:outline-none font-mono"
+                  />
+                  {salesDate !== today && (
+                    <button
+                      type="button"
+                      onClick={() => setSalesDate(today)}
+                      className="px-2 py-0.5 rounded-md bg-white border border-[#1D1717]/15 text-[11px] font-semibold text-[#1D1717] hover:bg-[#F3BFD3]/40 cursor-pointer"
+                    >
+                      Today
+                    </button>
+                  )}
+                </div>
+
+                <div className="inline-flex items-center gap-1 bg-[#F8EEEB] p-1 rounded-xl border border-[#1D1717]/10 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setEmpChartMode('day')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      empChartMode === 'day'
+                        ? 'bg-[#E83B84] text-white'
+                        : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                    }`}
+                  >
+                    Selected Day
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEmpChartMode('7d')}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      empChartMode === '7d'
+                        ? 'bg-[#E83B84] text-white'
+                        : 'text-[#1D1717]/70 hover:text-[#1D1717]'
+                    }`}
+                  >
+                    7-Day Trend
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {empDaily.employees.length === 0 ? (
+              <div className="py-10 text-center text-xs text-[#1D1717]/55">
+                No active stylists found yet. Add employees to track daily sales per stylist.
+              </div>
+            ) : empChartMode === 'day' ? (
+              selectedDayTotal === 0 ? (
+                <div className="py-10 text-center space-y-2 border border-dashed border-[#1D1717]/15 rounded-xl bg-[#F8EEEB]/40">
+                  <p className="text-xs text-[#1D1717]/65">
+                    No POS sales recorded for any stylist on <span className="font-mono font-semibold">{empDaily.date}</span>.
+                  </p>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('pos')}
+                      className="px-3.5 py-1.5 rounded-lg bg-[#E83B84] text-white text-xs font-semibold hover:bg-[#d12d73] cursor-pointer"
+                    >
+                      Open POS &amp; Billing
+                    </button>
+                    {salesDate !== today && (
+                      <button
+                        type="button"
+                        onClick={() => setSalesDate(today)}
+                        className="px-3.5 py-1.5 rounded-lg bg-white border border-[#1D1717]/15 text-xs font-semibold text-[#1D1717] hover:bg-[#F8EEEB] cursor-pointer"
+                      >
+                        Jump to Today ({today})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="h-72 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={empDaily.employees}
+                      margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+                      barGap={4}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        vertical={false}
+                        stroke="#1D1717"
+                        strokeOpacity={0.08}
+                      />
+                      <XAxis
+                        dataKey="shortName"
+                        tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.8 }}
+                        axisLine={{ stroke: '#1D1717', strokeOpacity: 0.12 }}
+                        tickLine={false}
+                        dy={6}
+                      />
+                      <YAxis
+                        tickFormatter={formatCompactUGX}
+                        tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.65, fontFamily: 'monospace' }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={56}
+                      />
+                      <Tooltip
+                        cursor={{ fill: '#F8EEEB', opacity: 0.7 }}
+                        content={({ active, payload }) => {
+                          if (!active || !payload || payload.length === 0) return null;
+                          const row = payload[0].payload as {
+                            fullName: string;
+                            roleTitle: string;
+                            serviceSales: number;
+                            retailSales: number;
+                            totalSales: number;
+                            servicesCount: number;
+                            commissionEarned: number;
+                          };
+                          return (
+                            <div className="bg-white border border-[#1D1717]/15 rounded-xl p-3.5 shadow-sm text-xs space-y-1.5 min-w-[220px]">
+                              <div className="border-b border-[#1D1717]/10 pb-1">
+                                <div className="font-bold text-[#1D1717]">{row.fullName}</div>
+                                <div className="text-[11px] text-[#1D1717]/55">{row.roleTitle}</div>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-[#1D1717]/75">Service Sales ({row.servicesCount})</span>
+                                <span className="font-mono tabular-nums font-semibold text-[#E83B84]">
+                                  {formatUGX(row.serviceSales)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-[#1D1717]/75">Retail Sales</span>
+                                <span className="font-mono tabular-nums font-semibold text-[#D65A8E]">
+                                  {formatUGX(row.retailSales)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4 border-t border-[#1D1717]/10 pt-1">
+                                <span className="font-semibold text-[#1D1717]">Total Daily Sales</span>
+                                <span className="font-mono tabular-nums font-bold text-[#1D1717]">
+                                  {formatUGX(row.totalSales)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-[#1D1717]/75">Commission Earned</span>
+                                <span className="font-mono tabular-nums font-semibold text-[#1D1717]/80">
+                                  {formatUGX(row.commissionEarned)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Legend
+                        verticalAlign="top"
+                        align="right"
+                        iconType="square"
+                        wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }}
+                      />
+                      <Bar
+                        dataKey="serviceSales"
+                        name="Service Sales (UGX)"
+                        stackId="sales"
+                        fill="#E83B84"
+                        maxBarSize={40}
+                      />
+                      <Bar
+                        dataKey="retailSales"
+                        name="Retail Sales (UGX)"
+                        stackId="sales"
+                        fill="#F08BB4"
+                        maxBarSize={40}
+                        radius={[4, 4, 0, 0]}
+                      />
+                      <Bar
+                        dataKey="commissionEarned"
+                        name="Commission (UGX)"
+                        fill="#1D1717"
+                        maxBarSize={20}
+                        radius={[4, 4, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            ) : (
+              <div className="h-72 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={empDaily.sevenDaySeries}
+                    margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      vertical={false}
+                      stroke="#1D1717"
+                      strokeOpacity={0.08}
+                    />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.8 }}
+                      axisLine={{ stroke: '#1D1717', strokeOpacity: 0.12 }}
+                      tickLine={false}
+                      dy={6}
+                    />
+                    <YAxis
+                      tickFormatter={formatCompactUGX}
+                      tick={{ fill: '#1D1717', fontSize: 11, opacity: 0.65, fontFamily: 'monospace' }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={56}
+                    />
+                    <Tooltip
+                      cursor={{ fill: '#F8EEEB', opacity: 0.7 }}
+                      content={({ active, payload }) => {
+                        if (!active || !payload || payload.length === 0) return null;
+                        const row = payload[0].payload as Record<string, string | number>;
+                        return (
+                          <div className="bg-white border border-[#1D1717]/15 rounded-xl p-3.5 shadow-sm text-xs space-y-1.5 min-w-[220px]">
+                            <div className="font-bold text-[#1D1717] border-b border-[#1D1717]/10 pb-1 flex items-center justify-between gap-2">
+                              <span>{row.dayLabel}</span>
+                              <span className="font-mono text-[11px] text-[#1D1717]/55">{row.date}</span>
+                            </div>
+                            {empDaily.employeesMeta.map((meta, idx) => {
+                              const val = Number(row[meta.employeeId] || 0);
+                              if (val <= 0) return null;
+                              return (
+                                <div key={meta.employeeId} className="flex items-center justify-between gap-4">
+                                  <span className="flex items-center gap-1.5 text-[#1D1717]/80">
+                                    <span
+                                      className="w-2 h-2 rounded-xs shrink-0"
+                                      style={{
+                                        backgroundColor:
+                                          EMPLOYEE_CHART_PALETTE[idx % EMPLOYEE_CHART_PALETTE.length],
+                                      }}
+                                    />
+                                    <span className="truncate max-w-[120px]">{meta.fullName}</span>
+                                  </span>
+                                  <span className="font-mono tabular-nums font-semibold text-[#1D1717]">
+                                    {formatUGX(val)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                            <div className="flex items-center justify-between gap-4 border-t border-[#1D1717]/10 pt-1">
+                              <span className="font-semibold text-[#1D1717]">Day Total</span>
+                              <span className="font-mono tabular-nums font-bold text-[#E83B84]">
+                                {formatUGX(Number(row.totalSales) || 0)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Legend
+                      verticalAlign="top"
+                      align="right"
+                      iconType="square"
+                      wrapperStyle={{ fontSize: '11px', paddingBottom: '8px' }}
+                    />
+                    {empDaily.employeesMeta.map((meta, idx) => (
+                      <Bar
+                        key={meta.employeeId}
+                        dataKey={meta.employeeId}
+                        name={meta.shortName}
+                        stackId="empWeek"
+                        fill={EMPLOYEE_CHART_PALETTE[idx % EMPLOYEE_CHART_PALETTE.length]}
+                        maxBarSize={42}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Section 4: Employee Performance, Popular Services & Upcoming Appointments */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

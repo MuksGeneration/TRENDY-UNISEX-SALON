@@ -537,6 +537,8 @@ export function createApiRouter() {
     const today = todayIsoDate();
     const startDate = (req.query.startDate as string) || `${today.slice(0, 7)}-01`;
     const endDate = (req.query.endDate as string) || today;
+    const rawSalesDate = typeof req.query.salesDate === 'string' ? req.query.salesDate.slice(0, 10) : '';
+    const salesDate = /^\d{4}-\d{2}-\d{2}$/.test(rawSalesDate) ? rawSalesDate : today;
 
     if (user.role === 'employee') {
       const emp = resolveEmployeeForUser(db, user);
@@ -564,9 +566,60 @@ export function createApiRouter() {
       const upcomingAppointments = empId
         ? db.appointments
             .filter((a) => a.employeeId === empId && a.date >= today && a.status !== 'Cancelled')
-            .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`))
+            .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${a.startTime}`))
             .slice(0, 10)
         : [];
+
+      const activeEmpTx = db.posTransactions.filter(
+        (t) => t.status !== 'Reversed' && t.status !== 'Refunded'
+      );
+      const empAnchor = new Date(`${today}T00:00:00Z`);
+      const EMP_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dailySalesTrend: Array<{
+        date: string;
+        label: string;
+        serviceSales: number;
+        retailSales: number;
+        totalSales: number;
+        commissionEarned: number;
+        servicesCount: number;
+      }> = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(empAnchor);
+        d.setUTCDate(empAnchor.getUTCDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        let serviceSales = 0;
+        let retailSales = 0;
+        let servicesCount = 0;
+        if (empId) {
+          for (const tx of activeEmpTx) {
+            if (tx.date !== iso) continue;
+            for (const item of tx.items) {
+              if (item.employeeId !== empId) continue;
+              if (item.itemType === 'service') {
+                serviceSales += item.lineTotal;
+                servicesCount += item.quantity || 1;
+              } else {
+                retailSales += item.lineTotal;
+              }
+            }
+          }
+        }
+        const dayComm = empId
+          ? db.commissionLedger
+              .filter((c) => c.employeeId === empId && c.date === iso && c.paymentStatus !== 'Reversed')
+              .reduce((s, c) => s + c.employeeCommission, 0)
+          : 0;
+        dailySalesTrend.push({
+          date: iso,
+          label: `${EMP_DAY_NAMES[d.getUTCDay()]} ${iso.slice(5)}`,
+          serviceSales,
+          retailSales,
+          totalSales: serviceSales + retailSales,
+          commissionEarned: dayComm,
+          servicesCount,
+        });
+      }
 
       res.json({
         roleScope: 'employee',
@@ -581,6 +634,7 @@ export function createApiRouter() {
           servicesCount: todayLedger.length,
         },
         summary,
+        dailySalesTrend,
         upcomingAppointments,
         recentLedger: empId
           ? db.commissionLedger
@@ -760,9 +814,105 @@ export function createApiRouter() {
       .sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date))
       .slice(0, 5);
 
+    // Daily sales per employee (for selected salesDate + 7-day trend ending on salesDate)
+    const salesDateTx = activeTx.filter((t) => t.date === salesDate);
+    const salesDateLedger = db.commissionLedger.filter(
+      (c) => c.date === salesDate && c.paymentStatus !== 'Reversed'
+    );
+    const employeeSalesList = db.employees
+      .filter((emp) => emp.active || salesDateTx.some((t) => t.items.some((i) => i.employeeId === emp.id)))
+      .map((emp) => {
+        let serviceSales = 0;
+        let retailSales = 0;
+        let servicesCount = 0;
+        for (const tx of salesDateTx) {
+          for (const item of tx.items) {
+            if (item.employeeId !== emp.id) continue;
+            if (item.itemType === 'service') {
+              serviceSales += item.lineTotal;
+              servicesCount += item.quantity || 1;
+            } else {
+              retailSales += item.lineTotal;
+            }
+          }
+        }
+        const empDayLedger = salesDateLedger.filter((c) => c.employeeId === emp.id);
+        const commissionEarned = empDayLedger.reduce((s, c) => s + c.employeeCommission, 0);
+        const salonShare = empDayLedger.reduce((s, c) => s + c.salonShare, 0);
+        const firstPart = emp.fullName.trim().split(/\s+/)[0] || emp.fullName;
+        return {
+          employeeId: emp.id,
+          fullName: emp.fullName,
+          shortName: firstPart,
+          roleTitle: emp.roleTitle,
+          avatarUrl: emp.avatarUrl,
+          serviceSales,
+          retailSales,
+          totalSales: serviceSales + retailSales,
+          servicesCount,
+          commissionEarned,
+          salonShare,
+        };
+      })
+      .sort((a, b) => b.totalSales - a.totalSales || a.fullName.localeCompare(b.fullName));
+
+    const salesAnchor = new Date(`${salesDate}T00:00:00Z`);
+    const employeeMetaMap = new Map<
+      string,
+      { employeeId: string; fullName: string; shortName: string; totalWeekSales: number }
+    >();
+    for (const emp of db.employees) {
+      const firstPart = emp.fullName.trim().split(/\s+/)[0] || emp.fullName;
+      employeeMetaMap.set(emp.id, {
+        employeeId: emp.id,
+        fullName: emp.fullName,
+        shortName: firstPart,
+        totalWeekSales: 0,
+      });
+    }
+
+    const sevenDayEmployeeSeries: Array<Record<string, string | number>> = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(salesAnchor);
+      d.setUTCDate(salesAnchor.getUTCDate() - i);
+      const iso = d.toISOString().slice(0, 10);
+      const dayTxs = activeTx.filter((t) => t.date === iso);
+      const row: Record<string, string | number> = {
+        date: iso,
+        dayLabel: DAY_NAMES[d.getUTCDay()],
+        label: `${DAY_NAMES[d.getUTCDay()]} ${iso.slice(5)}`,
+        totalSales: 0,
+      };
+      for (const tx of dayTxs) {
+        for (const item of tx.items) {
+          if (!item.employeeId) continue;
+          const prev = Number(row[item.employeeId] || 0);
+          row[item.employeeId] = prev + item.lineTotal;
+          row.totalSales = Number(row.totalSales) + item.lineTotal;
+          const meta = employeeMetaMap.get(item.employeeId);
+          if (meta) {
+            meta.totalWeekSales += item.lineTotal;
+          } else {
+            employeeMetaMap.set(item.employeeId, {
+              employeeId: item.employeeId,
+              fullName: item.employeeName || item.employeeId,
+              shortName: (item.employeeName || item.employeeId).split(/\s+/)[0],
+              totalWeekSales: item.lineTotal,
+            });
+          }
+        }
+      }
+      sevenDayEmployeeSeries.push(row);
+    }
+
+    const activeEmployeeMeta = Array.from(employeeMetaMap.values())
+      .filter((m) => m.totalWeekSales > 0 || db.employees.some((e) => e.id === m.employeeId && e.active))
+      .sort((a, b) => b.totalWeekSales - a.totalWeekSales || a.fullName.localeCompare(b.fullName));
+
     res.json({
       roleScope: user.role,
       today,
+      salesDate,
       period: { startDate, endDate },
       todayMetrics: {
         totalSales: todaySales.totalSales,
@@ -810,6 +960,12 @@ export function createApiRouter() {
       charts: {
         weeklyRevenueTrend,
         dailyTrend,
+        dailyEmployeeSales: {
+          date: salesDate,
+          employees: employeeSalesList,
+          sevenDaySeries: sevenDayEmployeeSeries,
+          employeesMeta: activeEmployeeMeta,
+        },
         employeePerformance,
         popularServices: Object.entries(servicePopularityMap)
           .sort((a, b) => b[1].revenue - a[1].revenue)
@@ -2173,12 +2329,14 @@ export function createApiRouter() {
     requireRole(['owner', 'manager']),
     (req: AuthenticatedRequest, res) => {
       const db = readDb();
-      const { name, categoryId, price, durationMinutes, commissionRateOverride, qualifiedEmployeeIds } = req.body;
+      const { name, categoryId, price, durationMinutes, commissionRateOverride, qualifiedEmployeeIds, imageUrl } =
+        req.body;
       const cat = db.serviceCategories.find((c) => c.id === categoryId);
       if (!name?.trim() || !cat || Number(price) <= 0) {
         res.status(400).json({ error: 'Service name, valid category, and positive price are required.' });
         return;
       }
+      const cleanImageUrl = typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl.trim() : undefined;
       const service = {
         id: makeId('SRV'),
         name: name.trim(),
@@ -2189,6 +2347,7 @@ export function createApiRouter() {
         commissionRateOverride:
           typeof commissionRateOverride === 'number' ? commissionRateOverride : undefined,
         qualifiedEmployeeIds: qualifiedEmployeeIds || [],
+        imageUrl: cleanImageUrl,
         active: true,
       };
       db.services.push(service);
@@ -2231,6 +2390,9 @@ export function createApiRouter() {
       if (req.body.name) srv.name = req.body.name;
       if (typeof req.body.durationMinutes === 'number') srv.durationMinutes = req.body.durationMinutes;
       if (typeof req.body.active === 'boolean') srv.active = req.body.active;
+      if (typeof req.body.imageUrl === 'string') {
+        srv.imageUrl = req.body.imageUrl.trim() || undefined;
+      }
       if (Array.isArray(req.body.qualifiedEmployeeIds)) srv.qualifiedEmployeeIds = req.body.qualifiedEmployeeIds;
       if (req.body.categoryId) {
         const cat = db.serviceCategories.find((c) => c.id === req.body.categoryId);
@@ -5873,6 +6035,7 @@ export function createApiRouter() {
           price: s.price,
           durationMinutes: s.durationMinutes,
           qualifiedEmployeeIds: s.qualifiedEmployeeIds,
+          imageUrl: s.imageUrl || '',
         })),
       stylists: activeStylists,
     });

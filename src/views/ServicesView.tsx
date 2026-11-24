@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Edit3, Image as ImageIcon } from 'lucide-react';
 import { apiFetch, formatUGX } from '../lib/api';
+import { resolveServiceImage, SERVICE_IMAGE_PRESETS } from '../lib/serviceImages';
 import type { SalonBranding, ServiceCategory, ServiceItem, SessionUser } from '../types';
 
 export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBranding }> = ({
@@ -21,6 +22,7 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
   const [categoryId, setCategoryId] = useState('');
   const [price, setPrice] = useState(25000);
   const [durationMinutes, setDurationMinutes] = useState(45);
+  const [imageUrl, setImageUrl] = useState('');
   const [error, setError] = useState('');
 
   const canManage = ['owner', 'manager'].includes(user.role);
@@ -50,6 +52,7 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
     setName('');
     setPrice(25000);
     setDurationMinutes(45);
+    setImageUrl('');
     setShowModal(true);
   };
 
@@ -59,6 +62,7 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
     setCategoryId(srv.categoryId);
     setPrice(srv.price);
     setDurationMinutes(srv.durationMinutes);
+    setImageUrl(srv.imageUrl || '');
     setShowModal(true);
   };
 
@@ -69,12 +73,12 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
       if (editing) {
         await apiFetch(`/api/services/${editing.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ name, categoryId, price, durationMinutes }),
+          body: JSON.stringify({ name, categoryId, price, durationMinutes, imageUrl }),
         });
       } else {
         await apiFetch('/api/services', {
           method: 'POST',
-          body: JSON.stringify({ name, categoryId, price, durationMinutes }),
+          body: JSON.stringify({ name, categoryId, price, durationMinutes, imageUrl }),
         });
       }
       setShowModal(false);
@@ -183,7 +187,17 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
                 const rate = s.commissionRateOverride ?? cat?.commissionRate ?? 0.4;
                 return (
                   <tr key={s.id} className="hover:bg-[#F8EEEB]/50">
-                    <td className="py-3 px-3 font-semibold text-[#1D1717]">{s.name}</td>
+                    <td className="py-3 px-3 font-semibold text-[#1D1717]">
+                      <div className="flex items-center gap-2.5">
+                        <img
+                          src={resolveServiceImage(s)}
+                          alt={s.name}
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-8 rounded-md object-cover border border-[#1D1717]/10 shrink-0 bg-[#F8EEEB]"
+                        />
+                        <span>{s.name}</span>
+                      </div>
+                    </td>
                     <td className="py-3 px-3 text-[#1D1717]/75">{s.categoryName}</td>
                     <td className="py-3 px-3 text-right font-mono">{s.durationMinutes} min</td>
                     <td className="py-3 px-3 text-right font-mono font-semibold text-[#E83B84]">
@@ -293,6 +307,49 @@ export const ServicesView: React.FC<{ user: SessionUser; branding?: SalonBrandin
                   onChange={(e) => setDurationMinutes(Number(e.target.value))}
                   className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
                 />
+              </div>
+            </div>
+            <div>
+              <label className="block font-semibold mb-1">Booking Photo (Optional — auto-matched if blank)</label>
+              <div className="flex items-center gap-3 mb-2">
+                <img
+                  src={resolveServiceImage({ name, categoryId, imageUrl })}
+                  alt={name || 'Service preview'}
+                  referrerPolicy="no-referrer"
+                  className="w-16 h-12 rounded-lg object-cover border border-[#1D1717]/15 bg-[#F8EEEB] shrink-0"
+                />
+                <input
+                  type="text"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="Auto-matched by service category, or paste image URL"
+                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {SERVICE_IMAGE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.url}
+                    type="button"
+                    onClick={() => setImageUrl(preset.url)}
+                    className={`px-2 py-1 rounded-lg border text-[11px] cursor-pointer transition-colors ${
+                      imageUrl === preset.url
+                        ? 'border-[#E83B84] bg-[#F3BFD3]/30 text-[#1D1717] font-semibold'
+                        : 'border-[#1D1717]/15 bg-[#F8EEEB]/60 text-[#1D1717]/75 hover:border-[#E83B84]/50'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                {imageUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setImageUrl('')}
+                    className="px-2 py-1 rounded-lg border border-[#1D1717]/15 text-[11px] text-[#1D1717]/65 hover:bg-[#F8EEEB] cursor-pointer"
+                  >
+                    Auto-match
+                  </button>
+                )}
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
