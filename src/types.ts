@@ -313,6 +313,7 @@ export interface CommissionPaymentRecord {
   employeeId: string;
   employeeName: string;
   amount: number;
+  commissionDate?: string;
   paymentDate: string;
   paymentMethod: PaymentMethod;
   notes?: string;

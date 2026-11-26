@@ -27,9 +27,11 @@ import {
 import { validatePasswordPolicy } from './passwordPolicy.ts';
 import {
   getEmployeeCommissionSummary,
+  getEmployeeDailyCommissionBreakdown,
   getPolicyForDate,
   recomputeEmployeeDailyCommission,
   resolveServiceCommissionRate,
+  syncEmployeeCommissionLedgerStatuses,
 } from './commissionEngine.ts';
 import { askSalonAiAssistant } from './aiService.ts';
 import {
@@ -3145,6 +3147,25 @@ export function createApiRouter() {
     if (user.role === 'employee') {
       const emp = resolveEmployeeForUser(db, user);
       const empId = emp?.id || user.employeeId || '';
+      const dailyBalances = emp
+        ? getEmployeeDailyCommissionBreakdown(db, emp.id)
+            .map((d) => ({
+              employeeId: emp.id,
+              employeeName: emp.fullName,
+              roleTitle: emp.roleTitle,
+              date: d.date,
+              grossEarnings: d.grossEarnings,
+              totalLunchDeducted: d.lunchDeducted,
+              netCommissionable: d.netCommissionable,
+              totalCommissionEarned: d.totalCommissionEarned,
+              totalPaid: d.paidForDate,
+              outstandingBalance: d.outstandingBalance,
+              totalSalonShare: d.salonShare,
+              directTips: d.directTips,
+              servicesCount: d.servicesCount,
+            }))
+            .sort((a, b) => b.date.localeCompare(a.date))
+        : [];
       res.json({
         policies: db.commissionPolicies,
         ledger: empId ? db.commissionLedger.filter((c) => c.employeeId === empId).reverse() : [],
@@ -3154,6 +3175,7 @@ export function createApiRouter() {
         summaries: emp
           ? [{ employeeId: emp.id, employeeName: emp.fullName, ...getEmployeeCommissionSummary(db, emp.id) }]
           : [],
+        dailyBalances,
       });
       return;
     }
@@ -3165,6 +3187,26 @@ export function createApiRouter() {
       ...getEmployeeCommissionSummary(db, emp.id),
     }));
 
+    const dailyBalances = db.employees
+      .flatMap((emp) =>
+        getEmployeeDailyCommissionBreakdown(db, emp.id).map((d) => ({
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          roleTitle: emp.roleTitle,
+          date: d.date,
+          grossEarnings: d.grossEarnings,
+          totalLunchDeducted: d.lunchDeducted,
+          netCommissionable: d.netCommissionable,
+          totalCommissionEarned: d.totalCommissionEarned,
+          totalPaid: d.paidForDate,
+          outstandingBalance: d.outstandingBalance,
+          totalSalonShare: d.salonShare,
+          directTips: d.directTips,
+          servicesCount: d.servicesCount,
+        }))
+      )
+      .sort((a, b) => b.date.localeCompare(a.date) || a.employeeName.localeCompare(b.employeeName));
+
     res.json({
       policies: db.commissionPolicies,
       ledger: [...db.commissionLedger].reverse(),
@@ -3172,6 +3214,7 @@ export function createApiRouter() {
       payments: [...db.commissionPayments].reverse(),
       adjustments: [...db.commissionAdjustments].reverse(),
       summaries,
+      dailyBalances,
     });
   });
 
@@ -3222,8 +3265,9 @@ export function createApiRouter() {
     requireRole(['owner', 'manager']),
     (req: AuthenticatedRequest, res) => {
       const db = readDb();
-      const { employeeId, amount, paymentDate, paymentMethod, notes } = req.body as {
+      const { employeeId, commissionDate, amount, paymentDate, paymentMethod, notes } = req.body as {
         employeeId: string;
+        commissionDate?: string;
         amount: number;
         paymentDate?: string;
         paymentMethod: PaymentMethod;
@@ -3240,10 +3284,29 @@ export function createApiRouter() {
         return;
       }
 
-      const summary = getEmployeeCommissionSummary(db, employeeId);
-      if (payAmt > summary.outstandingBalance) {
+      const resolvedPaymentDate =
+        paymentDate && /^\d{4}-\d{2}-\d{2}$/.test(paymentDate.trim())
+          ? paymentDate.trim()
+          : todayIsoDate();
+      const targetCommissionDate =
+        commissionDate && /^\d{4}-\d{2}-\d{2}$/.test(commissionDate.trim())
+          ? commissionDate.trim()
+          : resolvedPaymentDate;
+
+      const dailyBreakdown = getEmployeeDailyCommissionBreakdown(db, employeeId);
+      const dayBalance = dailyBreakdown.find((d) => d.date === targetCommissionDate);
+      const dayOutstanding = dayBalance ? dayBalance.outstandingBalance : 0;
+
+      if (dayOutstanding <= 0) {
         res.status(400).json({
-          error: `Payment (UGX ${payAmt.toLocaleString()}) exceeds ${emp.fullName}'s outstanding balance of UGX ${summary.outstandingBalance.toLocaleString()}.`,
+          error: `${emp.fullName} has no unpaid commission remaining for ${targetCommissionDate}. Please select the exact earning date with an unpaid balance.`,
+        });
+        return;
+      }
+
+      if (payAmt > dayOutstanding) {
+        res.status(400).json({
+          error: `Payment (UGX ${payAmt.toLocaleString()}) exceeds ${emp.fullName}'s unpaid commission for ${targetCommissionDate} (UGX ${dayOutstanding.toLocaleString()}). Payouts are isolated per date so yesterday's balance does not mix with today's.`,
         });
         return;
       }
@@ -3254,7 +3317,8 @@ export function createApiRouter() {
         employeeId: emp.id,
         employeeName: emp.fullName,
         amount: payAmt,
-        paymentDate: paymentDate || todayIsoDate(),
+        commissionDate: targetCommissionDate,
+        paymentDate: resolvedPaymentDate,
         paymentMethod: paymentMethod || 'Cash',
         notes,
         paidById: req.sessionUser!.userId,
@@ -3263,29 +3327,7 @@ export function createApiRouter() {
       };
       db.commissionPayments.push(payment);
 
-      // Update payment status flags cleanly on non-historical ledger rows using FIFO
-      let remainingPaidBudget = getEmployeeCommissionSummary(db, employeeId).totalPaid;
-      const empEntries = db.commissionLedger
-        .filter((c) => c.employeeId === employeeId && !c.isHistorical && c.paymentStatus !== 'Reversed')
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      // Account for historical paid/unpaid first
-      const historicalPaid = db.commissionLedger
-        .filter((c) => c.employeeId === employeeId && c.isHistorical && c.paymentStatus === 'Paid')
-        .reduce((s, c) => s + c.employeeCommission, 0);
-      remainingPaidBudget = Math.max(0, remainingPaidBudget - historicalPaid);
-
-      for (const entry of empEntries) {
-        if (remainingPaidBudget >= entry.employeeCommission) {
-          entry.paymentStatus = 'Paid';
-          remainingPaidBudget -= entry.employeeCommission;
-        } else if (remainingPaidBudget > 0) {
-          entry.paymentStatus = 'Partially Paid';
-          remainingPaidBudget = 0;
-        } else {
-          entry.paymentStatus = 'Unpaid';
-        }
-      }
+      syncEmployeeCommissionLedgerStatuses(db, employeeId);
 
       appendAuditLog(
         db,
@@ -3293,10 +3335,16 @@ export function createApiRouter() {
         'COMMISSION_PAYMENT_RECORDED',
         'CommissionPayment',
         payment.id,
-        `Paid UGX ${payAmt.toLocaleString()} to ${emp.fullName} via ${payment.paymentMethod} (${payment.reference}).`
+        `Paid UGX ${payAmt.toLocaleString()} to ${emp.fullName} for ${targetCommissionDate} commission via ${payment.paymentMethod} on ${payment.paymentDate} (${payment.reference}).`
       );
       writeDb(db);
-      res.status(201).json({ payment, newSummary: getEmployeeCommissionSummary(db, employeeId) });
+      res.status(201).json({
+        payment,
+        newSummary: getEmployeeCommissionSummary(db, employeeId),
+        dayBalance: getEmployeeDailyCommissionBreakdown(db, employeeId).find(
+          (d) => d.date === targetCommissionDate
+        ),
+      });
     }
   );
 
@@ -3329,13 +3377,14 @@ export function createApiRouter() {
         createdAt: new Date().toISOString(),
       };
       db.commissionAdjustments.push(adj);
+      syncEmployeeCommissionLedgerStatuses(db, emp.id);
       appendAuditLog(
         db,
         req.sessionUser!,
         'COMMISSION_ADJUSTMENT',
         'CommissionAdjustment',
         adj.id,
-        `Adjusted ${emp.fullName} commission by UGX ${adj.amount.toLocaleString()}: ${adj.reason}`
+        `Adjusted ${emp.fullName} commission by UGX ${adj.amount.toLocaleString()} for ${adj.date}: ${adj.reason}`
       );
       writeDb(db);
       res.status(201).json({ adjustment: adj });

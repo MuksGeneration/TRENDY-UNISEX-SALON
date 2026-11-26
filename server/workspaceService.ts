@@ -406,7 +406,7 @@ export function buildSheetMatrix(
       ]),
     ],
     'Commission Payments': [
-      ['ID', 'Reference', 'Employee', 'AmountUGX', 'PaymentDate', 'Method', 'PaidBy', 'Notes'],
+      ['ID', 'Reference', 'Employee', 'AmountUGX', 'PaymentDate', 'Method', 'PaidBy', 'Notes', 'CommissionDate'],
       ...db.commissionPayments.map((p) => [
         p.id,
         p.reference,
@@ -416,6 +416,7 @@ export function buildSheetMatrix(
         p.paymentMethod,
         p.paidByName,
         p.notes || '',
+        p.commissionDate || p.paymentDate,
       ]),
     ],
     Expenses: [

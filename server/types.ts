@@ -382,7 +382,8 @@ export interface CommissionPayment {
   employeeId: string;
   employeeName: string;
   amount: number;
-  paymentDate: string; // YYYY-MM-DD
+  commissionDate?: string; // YYYY-MM-DD earning date being paid out
+  paymentDate: string; // YYYY-MM-DD payout / cash-out date
   paymentMethod: PaymentMethod;
   notes?: string;
   paidById: string;
