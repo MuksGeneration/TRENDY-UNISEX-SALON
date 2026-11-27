@@ -24,6 +24,9 @@ import {
   FileClock,
   KeyRound,
   Link2,
+  LogIn,
+  LogOut,
+  Calendar,
 } from 'lucide-react';
 import {
   apiFetch,
@@ -32,7 +35,7 @@ import {
   fetchDriveMediaBlobUrl,
   formatUGX,
 } from '../lib/api';
-import { getSalonTodayIso } from '../lib/date';
+import { getSalonCurrentTimeHHmm, getSalonTodayIso } from '../lib/date';
 import { evaluatePasswordStrength } from '../lib/passwordPolicy';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
@@ -296,12 +299,16 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
   const [schDayOff, setSchDayOff] = useState(false);
   const [schNotes, setSchNotes] = useState('');
 
-  // Attendance form
+  // Attendance form & separate clock-in / clock-out controls
   const [attEmpId, setAttEmpId] = useState('');
   const [attDate, setAttDate] = useState(() => getSalonTodayIso());
-  const [attIn, setAttIn] = useState('08:00');
-  const [attOut, setAttOut] = useState('20:00');
+  const [attIn, setAttIn] = useState(() => getSalonCurrentTimeHHmm());
+  const [attOut, setAttOut] = useState('');
   const [attStatus, setAttStatus] = useState<'Present' | 'Late' | 'Absent' | 'Approved Leave'>('Present');
+  const [attNotes, setAttNotes] = useState('');
+  const [attBoardDate, setAttBoardDate] = useState(() => getSalonTodayIso());
+  const [attFilterDate, setAttFilterDate] = useState('');
+  const [clockBusyKey, setClockBusyKey] = useState<string | null>(null);
 
   const isOwner = user.role === 'owner';
   const isManager = user.role === 'manager';
@@ -812,6 +819,70 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
     }
   };
 
+  const handleClockIn = async (
+    employeeId: string,
+    date: string = attBoardDate,
+    time?: string,
+    status: 'Present' | 'Late' = 'Present',
+    notes?: string
+  ) => {
+    setError('');
+    setClockBusyKey(`in:${employeeId}:${date}`);
+    try {
+      const targetTime = time && /^\d{2}:\d{2}$/.test(time) ? time : getSalonCurrentTimeHHmm();
+      const res = await apiFetch<{ record: { clockIn?: string } }>('/api/attendance/clock-in', {
+        method: 'POST',
+        body: JSON.stringify({
+          employeeId,
+          date,
+          time: targetTime,
+          status,
+          ...(notes ? { notes } : {}),
+        }),
+      });
+      const empName = employees.find((e) => e.id === employeeId)?.fullName || 'Staff';
+      setMsg(`${empName} clocked in at ${res.record.clockIn || targetTime} on ${date}.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clock in.');
+    } finally {
+      setClockBusyKey(null);
+    }
+  };
+
+  const handleClockOut = async (
+    employeeId: string,
+    date: string = attBoardDate,
+    time?: string,
+    notes?: string
+  ) => {
+    setError('');
+    setClockBusyKey(`out:${employeeId}:${date}`);
+    try {
+      const targetTime = time && /^\d{2}:\d{2}$/.test(time) ? time : getSalonCurrentTimeHHmm();
+      const res = await apiFetch<{ record: { clockOut?: string; hoursWorked?: number } }>(
+        '/api/attendance/clock-out',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            employeeId,
+            date,
+            time: targetTime,
+            ...(notes ? { notes } : {}),
+          }),
+        }
+      );
+      const empName = employees.find((e) => e.id === employeeId)?.fullName || 'Staff';
+      const hrs = res.record.hoursWorked ? ` (${res.record.hoursWorked}h logged)` : '';
+      setMsg(`${empName} clocked out at ${res.record.clockOut || targetTime} on ${date}${hrs}.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clock out.');
+    } finally {
+      setClockBusyKey(null);
+    }
+  };
+
   const handleSaveAttendance = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -821,12 +892,14 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         body: JSON.stringify({
           employeeId: attEmpId,
           date: attDate,
-          clockIn: attStatus === 'Absent' ? undefined : attIn,
-          clockOut: attStatus === 'Absent' ? undefined : attOut,
+          clockIn: attStatus === 'Absent' || attStatus === 'Approved Leave' ? null : attIn || undefined,
+          clockOut: attStatus === 'Absent' || attStatus === 'Approved Leave' ? null : attOut || undefined,
           status: attStatus,
+          notes: attNotes || undefined,
         }),
       });
-      setMsg('Attendance logged and working hours calculated.');
+      setMsg('Attendance record saved.');
+      setAttNotes('');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save attendance.');
@@ -1476,127 +1549,467 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
         </div>
       )}
 
-      {mode === 'attendance' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {canLogAttendance && (
-            <form
-              onSubmit={handleSaveAttendance}
-              className="lg:col-span-4 bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4 h-fit"
-            >
-              <h3 className="text-base font-bold flex items-center gap-2">
-                <Clock className="w-4 h-4 text-[#E83B84]" /> Record Attendance
-              </h3>
-              <div className="space-y-3 text-xs">
+      {mode === 'attendance' && (() => {
+        const salonToday = getSalonTodayIso();
+        const attMapForBoardDate = new Map<string, (typeof attendance)[number]>();
+        for (const rec of attendance) {
+          if (rec.date === attBoardDate) {
+            attMapForBoardDate.set(rec.employeeId, rec);
+          }
+        }
+        const boardEmployees = isEmployeeSelf
+          ? employees.filter((e) => e.id === (user.employeeId || employees[0]?.id))
+          : employees.filter(
+              (e) => getEmployeeStatus(e) === 'Active' || attMapForBoardDate.has(e.id)
+            );
+        const filteredAttendance = attFilterDate
+          ? attendance.filter((a) => a.date === attFilterDate)
+          : attendance;
+
+        return (
+          <div className="space-y-6">
+            {/* Quick Separate Clock In / Clock Out Board */}
+            <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <label className="block font-semibold mb-1">Employee</label>
-                  <select
-                    value={attEmpId}
-                    onChange={(e) => setAttEmpId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
-                  >
-                    {employees.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.fullName}
-                      </option>
-                    ))}
-                  </select>
+                  <h3 className="text-base font-bold flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-[#E83B84]" />
+                    <span>Daily Clock-In &amp; Clock-Out Board</span>
+                  </h3>
+                  <p className="text-xs text-[#1D1717]/60 mt-0.5">
+                    Clock staff in upon arrival and clock them out separately when their shift ends.
+                  </p>
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">Date</label>
-                  <input
-                    type="date"
-                    value={attDate}
-                    onChange={(e) => setAttDate(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                  />
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 bg-[#F8EEEB] border border-[#1D1717]/10 rounded-xl px-2.5 py-1 text-xs">
+                    <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
+                    <input
+                      type="date"
+                      value={attBoardDate}
+                      onChange={(e) => {
+                        if (e.target.value) setAttBoardDate(e.target.value);
+                      }}
+                      aria-label="Attendance board date"
+                      className="bg-transparent focus:outline-none font-mono"
+                    />
+                    {attBoardDate !== salonToday && (
+                      <button
+                        type="button"
+                        onClick={() => setAttBoardDate(salonToday)}
+                        className="px-2 py-0.5 rounded-md bg-white border border-[#1D1717]/15 text-[11px] font-semibold text-[#1D1717] hover:bg-[#F3BFD3]/40 cursor-pointer"
+                      >
+                        Today
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <label className="block font-semibold mb-1">Status</label>
-                  <select
-                    value={attStatus}
-                    onChange={(e) => setAttStatus(e.target.value as typeof attStatus)}
-                    className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
-                  >
-                    <option value="Present">Present</option>
-                    <option value="Late">Late</option>
-                    <option value="Absent">Absent</option>
-                    <option value="Approved Leave">Approved Leave</option>
-                  </select>
+              </div>
+
+              {boardEmployees.length === 0 ? (
+                <p className="text-xs text-[#1D1717]/60 py-6 text-center">
+                  No staff profiles available to clock in or out.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {boardEmployees.map((emp) => {
+                    const rec = attMapForBoardDate.get(emp.id);
+                    const hasIn = Boolean(rec?.clockIn);
+                    const hasOut = Boolean(rec?.clockOut);
+                    const isOff = rec?.status === 'Absent' || rec?.status === 'Approved Leave';
+                    const busyIn = clockBusyKey === `in:${emp.id}:${attBoardDate}`;
+                    const busyOut = clockBusyKey === `out:${emp.id}:${attBoardDate}`;
+
+                    return (
+                      <div
+                        key={emp.id}
+                        className="rounded-xl border border-[#1D1717]/10 bg-[#F8EEEB]/35 p-4 space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm text-[#1D1717] truncate">{emp.fullName}</div>
+                            <div className="text-[11px] text-[#1D1717]/60 truncate">{emp.roleTitle}</div>
+                          </div>
+                          <span
+                            className={`text-[11px] font-semibold shrink-0 ${
+                              isOff
+                                ? 'text-amber-700'
+                                : hasIn && hasOut
+                                  ? 'text-emerald-700'
+                                  : hasIn
+                                    ? 'text-[#E83B84]'
+                                    : 'text-[#1D1717]/50'
+                            }`}
+                          >
+                            {isOff
+                              ? rec?.status
+                              : hasIn && hasOut
+                                ? `Completed · ${rec?.hoursWorked ?? 0}h`
+                                : hasIn
+                                  ? 'On Shift'
+                                  : hasOut
+                                    ? 'Clocked Out'
+                                    : 'Not Clocked In'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="rounded-lg bg-white border border-[#1D1717]/10 px-2.5 py-2">
+                            <div className="text-[10px] uppercase tracking-wider text-[#1D1717]/55">
+                              Clock In
+                            </div>
+                            <div className="font-mono font-bold text-[#1D1717] mt-0.5">
+                              {rec?.clockIn || '—'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg bg-white border border-[#1D1717]/10 px-2.5 py-2">
+                            <div className="text-[10px] uppercase tracking-wider text-[#1D1717]/55">
+                              Clock Out
+                            </div>
+                            <div className="font-mono font-bold text-[#1D1717] mt-0.5">
+                              {rec?.clockOut || (hasIn ? 'Active' : '—')}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            disabled={busyIn}
+                            onClick={() => void handleClockIn(emp.id, attBoardDate)}
+                            className={`inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                              hasIn
+                                ? 'bg-white border border-[#1D1717]/15 text-[#1D1717] hover:bg-[#F8EEEB]'
+                                : 'bg-[#1D1717] text-white hover:bg-[#1D1717]/90'
+                            } disabled:opacity-50`}
+                          >
+                            <LogIn className="w-3.5 h-3.5" />
+                            <span>{busyIn ? 'Saving...' : hasIn ? 'Update In' : 'Clock In'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyOut}
+                            onClick={() => void handleClockOut(emp.id, attBoardDate)}
+                            className={`inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                              hasOut
+                                ? 'bg-white border border-[#1D1717]/15 text-[#1D1717] hover:bg-[#F8EEEB]'
+                                : 'bg-[#E83B84] text-white hover:bg-[#d12d73]'
+                            } disabled:opacity-50`}
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                            <span>{busyOut ? 'Saving...' : hasOut ? 'Update Out' : 'Clock Out'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                {attStatus !== 'Absent' && (
-                  <div className="grid grid-cols-2 gap-2">
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {canLogAttendance && (
+                <form
+                  onSubmit={handleSaveAttendance}
+                  className="lg:col-span-4 bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4 h-fit"
+                >
+                  <div>
+                    <h3 className="text-base font-bold flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-[#E83B84]" /> Log Specific Clock Time
+                    </h3>
+                    <p className="text-[11px] text-[#1D1717]/60 mt-0.5">
+                      Record or adjust Clock In and Clock Out independently for any staff member and date.
+                    </p>
+                  </div>
+                  <div className="space-y-3 text-xs">
                     <div>
-                      <label className="block font-semibold mb-1">Clock In</label>
+                      <label className="block font-semibold mb-1">Employee</label>
+                      <select
+                        value={attEmpId}
+                        onChange={(e) => setAttEmpId(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
+                      >
+                        {employees.map((e) => (
+                          <option key={e.id} value={e.id}>
+                            {e.fullName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block font-semibold mb-1">Date</label>
+                        <input
+                          type="date"
+                          value={attDate}
+                          onChange={(e) => setAttDate(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Status</label>
+                        <select
+                          value={attStatus}
+                          onChange={(e) => setAttStatus(e.target.value as typeof attStatus)}
+                          className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
+                        >
+                          <option value="Present">Present</option>
+                          <option value="Late">Late</option>
+                          <option value="Absent">Absent</option>
+                          <option value="Approved Leave">Approved Leave</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {attStatus !== 'Absent' && attStatus !== 'Approved Leave' && (
+                      <div className="space-y-3 pt-1">
+                        {/* Separate Clock In Control */}
+                        <div className="rounded-xl border border-[#1D1717]/10 bg-[#F8EEEB]/45 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="font-semibold text-[#1D1717]">Clock In Time</label>
+                            <button
+                              type="button"
+                              onClick={() => setAttIn(getSalonCurrentTimeHHmm())}
+                              className="text-[11px] font-semibold text-[#E83B84] hover:underline cursor-pointer"
+                            >
+                              Use Now
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="time"
+                              value={attIn}
+                              onChange={(e) => setAttIn(e.target.value)}
+                              className="flex-1 px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-mono"
+                            />
+                            <button
+                              type="button"
+                              disabled={!attEmpId || clockBusyKey === `in:${attEmpId}:${attDate}`}
+                              onClick={() =>
+                                void handleClockIn(
+                                  attEmpId,
+                                  attDate,
+                                  attIn || getSalonCurrentTimeHHmm(),
+                                  attStatus === 'Late' ? 'Late' : 'Present',
+                                  attNotes || undefined
+                                )
+                              }
+                              className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-[#1D1717] text-white font-semibold hover:bg-[#1D1717]/90 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                            >
+                              <LogIn className="w-3.5 h-3.5" />
+                              <span>Clock In Only</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Separate Clock Out Control */}
+                        <div className="rounded-xl border border-[#1D1717]/10 bg-[#F8EEEB]/45 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="font-semibold text-[#1D1717]">Clock Out Time</label>
+                            <button
+                              type="button"
+                              onClick={() => setAttOut(getSalonCurrentTimeHHmm())}
+                              className="text-[11px] font-semibold text-[#E83B84] hover:underline cursor-pointer"
+                            >
+                              Use Now
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="time"
+                              value={attOut}
+                              onChange={(e) => setAttOut(e.target.value)}
+                              className="flex-1 px-3 py-2 rounded-xl border border-[#1D1717]/15 bg-white font-mono"
+                            />
+                            <button
+                              type="button"
+                              disabled={!attEmpId || clockBusyKey === `out:${attEmpId}:${attDate}`}
+                              onClick={() =>
+                                void handleClockOut(
+                                  attEmpId,
+                                  attDate,
+                                  attOut || getSalonCurrentTimeHHmm(),
+                                  attNotes || undefined
+                                )
+                              }
+                              className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-[#E83B84] text-white font-semibold hover:bg-[#d12d73] cursor-pointer whitespace-nowrap disabled:opacity-50"
+                            >
+                              <LogOut className="w-3.5 h-3.5" />
+                              <span>Clock Out Only</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block font-semibold mb-1">Notes (Optional)</label>
                       <input
-                        type="time"
-                        value={attIn}
-                        onChange={(e) => setAttIn(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                        type="text"
+                        value={attNotes}
+                        onChange={(e) => setAttNotes(e.target.value)}
+                        placeholder="e.g. Late traffic, half-day..."
+                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15"
                       />
                     </div>
-                    <div>
-                      <label className="block font-semibold mb-1">Clock Out</label>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 rounded-xl border border-[#1D1717]/20 text-[#1D1717] hover:bg-[#F8EEEB] font-semibold cursor-pointer"
+                    >
+                      {attStatus === 'Absent' || attStatus === 'Approved Leave'
+                        ? `Save ${attStatus} Record`
+                        : 'Save Combined Entry'}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              <div
+                className={`${
+                  canLogAttendance ? 'lg:col-span-8' : 'lg:col-span-12'
+                } bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <h3 className="text-base font-bold">Attendance &amp; Working Hours Log</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 bg-[#F8EEEB] border border-[#1D1717]/10 rounded-xl px-2.5 py-1 text-xs">
+                      <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
                       <input
-                        type="time"
-                        value={attOut}
-                        onChange={(e) => setAttOut(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+                        type="date"
+                        value={attFilterDate}
+                        onChange={(e) => setAttFilterDate(e.target.value)}
+                        aria-label="Filter attendance log by date"
+                        className="bg-transparent focus:outline-none font-mono"
                       />
+                      {attFilterDate && (
+                        <button
+                          type="button"
+                          onClick={() => setAttFilterDate('')}
+                          className="px-2 py-0.5 rounded-md bg-white border border-[#1D1717]/15 text-[11px] font-semibold text-[#1D1717] hover:bg-[#F3BFD3]/40 cursor-pointer"
+                        >
+                          All Dates
+                        </button>
+                      )}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        exportReportToPdf(
+                          'Staff Attendance & Clock-In/Out Log',
+                          'Trendy Unisex Salon',
+                          ['Date', 'Employee', 'Clock In', 'Clock Out', 'Hours Worked', 'Status'],
+                          filteredAttendance.map((a) => {
+                            const emp = employees.find((e) => e.id === a.employeeId);
+                            return [
+                              a.date,
+                              emp?.fullName || a.employeeId,
+                              a.clockIn || '—',
+                              a.clockOut || '—',
+                              a.hoursWorked > 0 ? `${a.hoursWorked}h` : a.clockIn ? 'In Progress' : '0h',
+                              a.status,
+                            ];
+                          })
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#1D1717]/15 text-xs font-semibold hover:bg-[#F8EEEB] cursor-pointer"
+                    >
+                      <FileDown className="w-3.5 h-3.5" /> Export PDF
+                    </button>
+                  </div>
+                </div>
+
+                {filteredAttendance.length === 0 ? (
+                  <p className="text-xs text-[#1D1717]/60 py-8 text-center">
+                    {attFilterDate
+                      ? `No attendance records logged on ${attFilterDate}.`
+                      : 'No attendance records logged yet.'}
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
+                          <th className="py-2.5 px-3">Date</th>
+                          <th className="py-2.5 px-3">Employee</th>
+                          <th className="py-2.5 px-3">Clock In</th>
+                          <th className="py-2.5 px-3">Clock Out</th>
+                          <th className="py-2.5 px-3 text-right">Hours</th>
+                          <th className="py-2.5 px-3">Status</th>
+                          <th className="py-2.5 px-3 text-right">Quick Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1D1717]/10">
+                        {filteredAttendance.map((a) => {
+                          const emp = employees.find((e) => e.id === a.employeeId);
+                          const isOff = a.status === 'Absent' || a.status === 'Approved Leave';
+                          const canQuickClock =
+                            canLogAttendance ||
+                            (isEmployeeSelf && a.employeeId === (user.employeeId || emp?.id));
+                          return (
+                            <tr key={a.id} className="hover:bg-[#F8EEEB]/40">
+                              <td className="py-2.5 px-3 font-mono">{a.date}</td>
+                              <td className="py-2.5 px-3 font-semibold">{emp?.fullName || a.employeeId}</td>
+                              <td className="py-2.5 px-3 font-mono">
+                                {a.clockIn ? (
+                                  <span className="font-semibold text-[#1D1717]">{a.clockIn}</span>
+                                ) : (
+                                  <span className="text-[#1D1717]/40">—</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono">
+                                {a.clockOut ? (
+                                  <span className="font-semibold text-[#1D1717]">{a.clockOut}</span>
+                                ) : a.clockIn && !isOff ? (
+                                  <span className="text-[11px] font-sans font-semibold text-[#E83B84]">
+                                    On Shift
+                                  </span>
+                                ) : (
+                                  <span className="text-[#1D1717]/40">—</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono">
+                                {a.hoursWorked > 0
+                                  ? `${a.hoursWorked}h`
+                                  : a.clockIn && !a.clockOut && !isOff
+                                    ? 'Active'
+                                    : '0h'}
+                              </td>
+                              <td className="py-2.5 px-3 font-semibold text-[#E83B84]">{a.status}</td>
+                              <td className="py-2.5 px-3 text-right">
+                                {canQuickClock && !isOff && !a.clockIn && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleClockIn(a.employeeId, a.date)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#1D1717] text-white text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    <LogIn className="w-3 h-3" /> Clock In
+                                  </button>
+                                )}
+                                {canQuickClock && !isOff && a.clockIn && !a.clockOut && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleClockOut(a.employeeId, a.date)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#E83B84] text-white text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    <LogOut className="w-3 h-3" /> Clock Out
+                                  </button>
+                                )}
+                                {a.clockIn && a.clockOut && (
+                                  <span className="text-[11px] text-emerald-700 font-semibold">Done</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-xl bg-[#E83B84] text-white font-semibold cursor-pointer"
-                >
-                  Save Attendance Log
-                </button>
               </div>
-            </form>
-          )}
-
-          <div
-            className={`${
-              canLogAttendance ? 'lg:col-span-8' : 'lg:col-span-12'
-            } bg-white border border-[#1D1717]/10 rounded-2xl p-6`}
-          >
-            <h3 className="text-base font-bold mb-4">Attendance &amp; Working Hours Log</h3>
-            {attendance.length === 0 ? (
-              <p className="text-xs text-[#1D1717]/60 py-8 text-center">No attendance records logged yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
-                      <th className="py-2.5 px-3">Date</th>
-                      <th className="py-2.5 px-3">Employee</th>
-                      <th className="py-2.5 px-3">Clock In / Out</th>
-                      <th className="py-2.5 px-3 text-right">Hours</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#1D1717]/10">
-                    {attendance.map((a) => {
-                      const emp = employees.find((e) => e.id === a.employeeId);
-                      return (
-                        <tr key={a.id}>
-                          <td className="py-2.5 px-3 font-mono">{a.date}</td>
-                          <td className="py-2.5 px-3 font-semibold">{emp?.fullName || a.employeeId}</td>
-                          <td className="py-2.5 px-3 font-mono">
-                            {a.clockIn || '—'} – {a.clockOut || '—'}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono">{a.hoursWorked}h</td>
-                          <td className="py-2.5 px-3 font-semibold text-[#E83B84]">{a.status}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Add / Edit Employee Modal */}
       {showEmpModal && (

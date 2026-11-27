@@ -4,6 +4,7 @@ import {
   appendAuditLog,
   createBackupSnapshot,
   createInitialDatabase,
+  currentSalonTimeHHmm,
   getBackupSnapshot,
   IS_SERVERLESS,
   markDbCleanFromCloudSync,
@@ -2446,6 +2447,179 @@ export function createApiRouter() {
     res.json({ attendance: [...records].reverse() });
   });
 
+  const computeAttendanceHours = (clockIn?: string, clockOut?: string): number => {
+    if (!clockIn || !clockOut) return 0;
+    const startMin = timeToMinutes(clockIn);
+    const endMin = resolveClosingMinutes(startMin, clockOut);
+    return Math.max(0, Number(((endMin - startMin) / 60).toFixed(2)));
+  };
+
+  const resolveAttendanceTargetEmployeeId = (
+    db: ReturnType<typeof readDb>,
+    user: NonNullable<AuthenticatedRequest['sessionUser']>,
+    requestedEmployeeId?: string
+  ): string | null => {
+    if (user.role === 'employee') {
+      const selfEmp = resolveEmployeeForUser(db, user);
+      const selfId = selfEmp?.id || user.employeeId || '';
+      if (!selfId) return null;
+      if (requestedEmployeeId && requestedEmployeeId !== selfId) return null;
+      return selfId;
+    }
+    return requestedEmployeeId?.trim() || null;
+  };
+
+  router.post('/attendance/clock-in', requireAuth, (req: AuthenticatedRequest, res) => {
+    const db = readDb();
+    const user = req.sessionUser!;
+    const { employeeId: reqEmpId, date, time, status, notes } = req.body as {
+      employeeId?: string;
+      date?: string;
+      time?: string;
+      status?: 'Present' | 'Late';
+      notes?: string;
+    };
+
+    const employeeId = resolveAttendanceTargetEmployeeId(db, user, reqEmpId);
+    if (!employeeId) {
+      res.status(user.role === 'employee' ? 403 : 400).json({
+        error:
+          user.role === 'employee'
+            ? 'Your account is not linked to an employee profile, or you cannot clock in for another staff member.'
+            : 'Employee is required to clock in.',
+      });
+      return;
+    }
+
+    const emp = db.employees.find((e) => e.id === employeeId);
+    if (!emp) {
+      res.status(404).json({ error: 'Employee not found.' });
+      return;
+    }
+
+    const targetDate =
+      date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim()) ? date.trim() : todayIsoDate();
+    const clockInTime =
+      time && /^\d{2}:\d{2}$/.test(time.trim()) ? time.trim() : currentSalonTimeHHmm();
+
+    const existing = db.attendance.find((a) => a.employeeId === employeeId && a.date === targetDate);
+    if (existing) {
+      existing.clockIn = clockInTime;
+      existing.status = status || (existing.status === 'Absent' || existing.status === 'Approved Leave' ? 'Present' : existing.status);
+      existing.hoursWorked = computeAttendanceHours(existing.clockIn, existing.clockOut);
+      if (notes !== undefined) existing.notes = notes;
+      appendAuditLog(
+        db,
+        user,
+        'AttendanceClockIn',
+        'AttendanceRecord',
+        existing.id,
+        `${emp.fullName} clocked in at ${clockInTime} on ${targetDate}`
+      );
+      writeDb(db);
+      res.json({ record: existing });
+      return;
+    }
+
+    const record = {
+      id: makeId('ATT'),
+      employeeId,
+      date: targetDate,
+      clockIn: clockInTime,
+      clockOut: undefined,
+      hoursWorked: 0,
+      status: status || 'Present',
+      notes,
+    };
+    db.attendance.push(record);
+    appendAuditLog(
+      db,
+      user,
+      'AttendanceClockIn',
+      'AttendanceRecord',
+      record.id,
+      `${emp.fullName} clocked in at ${clockInTime} on ${targetDate}`
+    );
+    writeDb(db);
+    res.status(201).json({ record });
+  });
+
+  router.post('/attendance/clock-out', requireAuth, (req: AuthenticatedRequest, res) => {
+    const db = readDb();
+    const user = req.sessionUser!;
+    const { employeeId: reqEmpId, date, time, notes } = req.body as {
+      employeeId?: string;
+      date?: string;
+      time?: string;
+      notes?: string;
+    };
+
+    const employeeId = resolveAttendanceTargetEmployeeId(db, user, reqEmpId);
+    if (!employeeId) {
+      res.status(user.role === 'employee' ? 403 : 400).json({
+        error:
+          user.role === 'employee'
+            ? 'Your account is not linked to an employee profile, or you cannot clock out for another staff member.'
+            : 'Employee is required to clock out.',
+      });
+      return;
+    }
+
+    const emp = db.employees.find((e) => e.id === employeeId);
+    if (!emp) {
+      res.status(404).json({ error: 'Employee not found.' });
+      return;
+    }
+
+    const targetDate =
+      date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim()) ? date.trim() : todayIsoDate();
+    const clockOutTime =
+      time && /^\d{2}:\d{2}$/.test(time.trim()) ? time.trim() : currentSalonTimeHHmm();
+
+    const existing = db.attendance.find((a) => a.employeeId === employeeId && a.date === targetDate);
+    if (existing) {
+      existing.clockOut = clockOutTime;
+      if (existing.status === 'Absent' || existing.status === 'Approved Leave') {
+        existing.status = 'Present';
+      }
+      existing.hoursWorked = computeAttendanceHours(existing.clockIn, existing.clockOut);
+      if (notes !== undefined) existing.notes = notes;
+      appendAuditLog(
+        db,
+        user,
+        'AttendanceClockOut',
+        'AttendanceRecord',
+        existing.id,
+        `${emp.fullName} clocked out at ${clockOutTime} on ${targetDate} (${existing.hoursWorked}h)`
+      );
+      writeDb(db);
+      res.json({ record: existing });
+      return;
+    }
+
+    const record = {
+      id: makeId('ATT'),
+      employeeId,
+      date: targetDate,
+      clockIn: undefined,
+      clockOut: clockOutTime,
+      hoursWorked: 0,
+      status: 'Present' as const,
+      notes,
+    };
+    db.attendance.push(record);
+    appendAuditLog(
+      db,
+      user,
+      'AttendanceClockOut',
+      'AttendanceRecord',
+      record.id,
+      `${emp.fullName} clocked out at ${clockOutTime} on ${targetDate}`
+    );
+    writeDb(db);
+    res.status(201).json({ record });
+  });
+
   router.post(
     '/attendance',
     requireAuth,
@@ -2455,8 +2629,8 @@ export function createApiRouter() {
       const { employeeId, date, clockIn, clockOut, status, notes } = req.body as {
         employeeId: string;
         date: string;
-        clockIn?: string;
-        clockOut?: string;
+        clockIn?: string | null;
+        clockOut?: string | null;
         status: 'Present' | 'Late' | 'Absent' | 'Approved Leave';
         notes?: string;
       };
@@ -2465,17 +2639,36 @@ export function createApiRouter() {
         return;
       }
 
-      let hoursWorked = 0;
-      if (clockIn && clockOut) {
-        const startMin = timeToMinutes(clockIn);
-        const endMin = resolveClosingMinutes(startMin, clockOut);
-        const diff = endMin - startMin;
-        hoursWorked = Math.max(0, Number((diff / 60).toFixed(2)));
-      }
-
+      const normalizedStatus = status || 'Present';
+      const isOffStatus = normalizedStatus === 'Absent' || normalizedStatus === 'Approved Leave';
       const existing = db.attendance.find((a) => a.employeeId === employeeId && a.date === date);
+
+      const nextClockIn = isOffStatus
+        ? undefined
+        : clockIn === '' || clockIn === null
+          ? undefined
+          : clockIn !== undefined
+            ? clockIn.trim()
+            : existing?.clockIn;
+
+      const nextClockOut = isOffStatus
+        ? undefined
+        : clockOut === '' || clockOut === null
+          ? undefined
+          : clockOut !== undefined
+            ? clockOut.trim()
+            : existing?.clockOut;
+
+      const hoursWorked = computeAttendanceHours(nextClockIn, nextClockOut);
+
       if (existing) {
-        Object.assign(existing, { clockIn, clockOut, hoursWorked, status, notes });
+        Object.assign(existing, {
+          clockIn: nextClockIn,
+          clockOut: nextClockOut,
+          hoursWorked,
+          status: normalizedStatus,
+          ...(notes !== undefined ? { notes } : {}),
+        });
         writeDb(db);
         res.json({ record: existing });
         return;
@@ -2485,10 +2678,10 @@ export function createApiRouter() {
         id: makeId('ATT'),
         employeeId,
         date,
-        clockIn,
-        clockOut,
+        clockIn: nextClockIn,
+        clockOut: nextClockOut,
         hoursWorked,
-        status: status || 'Present',
+        status: normalizedStatus,
         notes,
       };
       db.attendance.push(record);

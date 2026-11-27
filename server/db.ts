@@ -57,6 +57,13 @@ export function currentSalonMinutes(now: Date = new Date()): number {
   return hour * 60 + minute;
 }
 
+export function currentSalonTimeHHmm(now: Date = new Date()): string {
+  const mins = currentSalonMinutes(now);
+  const hh = String(Math.floor(mins / 60) % 24).padStart(2, '0');
+  const mm = String(mins % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 export function createInitialDatabase(): SalonDatabase {
   const today = todayIsoDate();
   const now = new Date().toISOString();

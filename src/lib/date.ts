@@ -29,6 +29,13 @@ export function getSalonCurrentMinutes(now: Date = new Date()): number {
   return hour * 60 + minute;
 }
 
+export function getSalonCurrentTimeHHmm(now: Date = new Date()): string {
+  const mins = getSalonCurrentMinutes(now);
+  const hh = String(Math.floor(mins / 60) % 24).padStart(2, '0');
+  const mm = String(mins % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 /**
  * Computes milliseconds remaining until the next 00:00:00 midnight close in Africa/Kampala.
  */
