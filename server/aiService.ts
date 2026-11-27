@@ -1,6 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 import type { SessionPayload } from './auth.ts';
-import { getEmployeeCommissionSummary } from './commissionEngine.ts';
+import {
+  computeCommissionAggregateForPeriod,
+  getEmployeeCommissionSummary,
+} from './commissionEngine.ts';
 import { todayIsoDate } from './db.ts';
 import type { SalonDatabase } from './types.ts';
 
@@ -42,17 +45,25 @@ function buildRoleScopedContext(db: SalonDatabase, user: SessionPayload) {
     const myLedger = db.commissionLedger.filter((c) => c.employeeId === empId && c.date.startsWith(monthPrefix));
     const myPayments = db.commissionPayments.filter((p) => p.employeeId === empId);
 
+    const myMonthStart = `${monthPrefix}-01`;
+    const myMonthEnd = `${monthPrefix}-31`;
+    const myMonthAgg = empId
+      ? computeCommissionAggregateForPeriod(db, {
+          startDate: myMonthStart,
+          endDate: myMonthEnd,
+          employeeId: empId,
+        })
+      : null;
+
     return {
       accessScope: 'EMPLOYEE_SELF_ONLY',
       reportingDates: { today, tomorrow, weekStart, monthPrefix },
       employee: emp ? { id: emp.id, fullName: emp.fullName, roleTitle: emp.roleTitle } : null,
       commissionSummaryAllTime: summary,
-      thisMonthLedgerCount: myLedger.length,
-      thisMonthGrossEarnings: myLedger.reduce((s, c) => s + c.grossEarnings, 0),
-      thisMonthLunchDeductions: db.lunchDeductions
-        .filter((l) => l.employeeId === empId && l.date.startsWith(monthPrefix))
-        .reduce((s, l) => s + l.amount, 0),
-      thisMonthCommission: myLedger.reduce((s, c) => s + c.employeeCommission, 0),
+      thisMonthLedgerCount: myMonthAgg?.servicesCount ?? 0,
+      thisMonthGrossEarnings: myMonthAgg?.grossEarnings ?? 0,
+      thisMonthLunchDeductions: myMonthAgg?.lunchDeducted ?? 0,
+      thisMonthCommission: myMonthAgg?.baseCommissionEarned ?? 0,
       recentPayments: myPayments.slice(0, 10),
       upcomingAppointments: myAppointments.slice(0, 10),
       upcomingSchedules: mySchedules.slice(0, 10),
@@ -126,25 +137,27 @@ function buildRoleScopedContext(db: SalonDatabase, user: SessionPayload) {
   };
 
   // Owner & Manager full financial context
-  const monthLedger = db.commissionLedger.filter(
-    (c) => c.date.startsWith(monthPrefix) && c.paymentStatus !== 'Reversed'
-  );
+  const monthStart = `${monthPrefix}-01`;
+  const monthEnd = `${monthPrefix}-31`;
+  const monthCommissionAgg = computeCommissionAggregateForPeriod(db, {
+    startDate: monthStart,
+    endDate: monthEnd,
+  });
   const weekExpenses = db.expenses.filter(
     (e) => e.date >= weekStart && e.date <= today && e.status !== 'Rejected'
   );
   const monthExpenses = db.expenses.filter(
     (e) => e.date.startsWith(monthPrefix) && e.status !== 'Rejected'
   );
-  const monthLunch = db.lunchDeductions.filter((l) => l.date.startsWith(monthPrefix));
 
   const employeeRankings = db.employees.map((emp) => {
-    const empMonthLedger = monthLedger.filter((c) => c.employeeId === emp.id);
+    const empMonth = monthCommissionAgg.byEmployee.get(emp.id);
     const summary = getEmployeeCommissionSummary(db, emp.id);
     return {
       employeeId: emp.id,
       fullName: emp.fullName,
-      monthGrossServiceSales: empMonthLedger.reduce((s, c) => s + c.grossEarnings, 0),
-      monthCommissionEarned: empMonthLedger.reduce((s, c) => s + c.employeeCommission, 0),
+      monthGrossServiceSales: empMonth?.grossEarnings ?? 0,
+      monthCommissionEarned: empMonth?.baseCommissionEarned ?? 0,
       allTimeOutstandingCommission: summary.outstandingBalance,
       allTimePaidCommission: summary.totalPaid,
     };
@@ -168,7 +181,7 @@ function buildRoleScopedContext(db: SalonDatabase, user: SessionPayload) {
   const monthServiceRev = sumItems(monthTx, 'service');
   const monthProductRev = sumItems(monthTx, 'product');
   const monthTotalRev = monthTx.reduce((s, t) => s + t.totalAmount, 0);
-  const monthSalonShare = monthLedger.reduce((s, c) => s + c.salonShare, 0);
+  const monthSalonShare = monthCommissionAgg.salonShare;
   const monthExpensesTotal = monthExpenses.reduce((s, e) => s + e.amount, 0);
 
   return {
@@ -178,9 +191,9 @@ function buildRoleScopedContext(db: SalonDatabase, user: SessionPayload) {
       totalSales: monthTotalRev,
       serviceRevenue: monthServiceRev,
       retailProductSales: monthProductRev,
-      employeeCommissions: monthLedger.reduce((s, c) => s + c.employeeCommission, 0),
+      employeeCommissions: monthCommissionAgg.baseCommissionEarned,
       salonShareFromServices: monthSalonShare,
-      totalLunchDeductedThisMonth: monthLunch.reduce((s, l) => s + l.amount, 0),
+      totalLunchDeductedThisMonth: monthCommissionAgg.lunchDeducted,
       totalExpensesThisMonth: monthExpensesTotal,
       estimatedOperatingProfit: monthSalonShare + monthProductRev - monthExpensesTotal,
     },

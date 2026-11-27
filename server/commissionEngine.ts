@@ -115,6 +115,10 @@ export function allocateLunchAcrossItems(
  * record for a specific (employeeId, date) whenever a new POS transaction is saved
  * or reversed on that date.
  *
+ * Lunch is NEVER deducted on individual sales. Instead, a single once-per-day lunch
+ * deduction is recorded for total daily sales, and daily commission is computed on
+ * (Total Daily Sales - Daily Lunch).
+ *
  * Historical records (isHistorical === true) are strictly untouched.
  */
 export function recomputeEmployeeDailyCommission(
@@ -206,17 +210,10 @@ export function recomputeEmployeeDailyCommission(
     db.lunchDeductions.push(lunchRecord);
   }
 
-  const allocations = allocateLunchAcrossItems(
-    serviceLines.map((l) => ({ grossEarnings: l.grossEarnings, commissionRate: l.commissionRate })),
-    lunchAmount,
-    policy.lunchAllocationMethod
-  );
-
+  // Record each individual sale WITHOUT per-sale lunch deduction; daily lunch is applied on total daily sales.
   serviceLines.forEach((line, idx) => {
-    const lunchAlloc = allocations[idx];
-    const netCommissionable = Math.max(0, line.grossEarnings - lunchAlloc);
-    const empCommission = Math.round(netCommissionable * line.commissionRate);
-    const salonShare = netCommissionable - empCommission;
+    const grossCommission = Math.round(line.grossEarnings * line.commissionRate);
+    const grossSalonShare = line.grossEarnings - grossCommission;
 
     const entry: CommissionLedgerEntry = {
       id: `COM-${date}-${employeeId}-${idx + 1}-${line.transactionReference}`,
@@ -228,11 +225,11 @@ export function recomputeEmployeeDailyCommission(
       serviceName: line.serviceName,
       serviceCategory: line.serviceCategory,
       grossEarnings: line.grossEarnings,
-      lunchAllocation: lunchAlloc,
-      netCommissionableEarnings: netCommissionable,
+      lunchAllocation: 0,
+      netCommissionableEarnings: line.grossEarnings,
       commissionRate: line.commissionRate,
-      employeeCommission: empCommission,
-      salonShare,
+      employeeCommission: grossCommission,
+      salonShare: grossSalonShare,
       paymentStatus: 'Unpaid',
       isHistorical: false,
       policyId: policy.id,
@@ -243,6 +240,206 @@ export function recomputeEmployeeDailyCommission(
   });
 
   syncEmployeeCommissionLedgerStatuses(db, employeeId);
+}
+
+export interface DayCommissionMetrics {
+  grossEarnings: number;
+  lunchDeducted: number;
+  netCommissionable: number;
+  baseCommissionEarned: number;
+  salonShare: number;
+  historicalPaid: number;
+  servicesCount: number;
+  usesLegacyPerSaleAllocation: boolean;
+}
+
+/**
+ * Single source of truth for calculating an employee's commission for a single date.
+ * - For current daily-lunch entries (lunchAllocation === 0):
+ *     Net Daily Sales = Total Daily Sales - Daily Lunch Deduction
+ *     Daily Commission = Net Daily Sales * Weighted Commission Rate
+ *     Daily Salon Share = Net Daily Sales - Daily Commission
+ * - For imported historical / legacy per-sale-allocated entries: preserves stored values unchanged.
+ */
+export function computeEmployeeDayCommissionMetrics(
+  dayLedger: CommissionLedgerEntry[],
+  dayLunch: LunchDeductionRecord[]
+): DayCommissionMetrics {
+  const grossEarnings = dayLedger.reduce((s, c) => s + c.grossEarnings, 0);
+  const recordedLunch = dayLunch.reduce((s, l) => s + l.amount, 0);
+  const lunchDeducted = grossEarnings > 0 ? Math.min(grossEarnings, recordedLunch) : recordedLunch;
+
+  const usesLegacyPerSaleAllocation = dayLedger.some(
+    (c) => Boolean(c.isHistorical) || c.lunchAllocation > 0
+  );
+
+  let netCommissionable = 0;
+  let baseCommissionEarned = 0;
+  let salonShare = 0;
+
+  if (usesLegacyPerSaleAllocation) {
+    netCommissionable = dayLedger.reduce((s, c) => s + c.netCommissionableEarnings, 0);
+    baseCommissionEarned = dayLedger.reduce((s, c) => s + c.employeeCommission, 0);
+    salonShare = dayLedger.reduce((s, c) => s + c.salonShare, 0);
+  } else {
+    netCommissionable = Math.max(0, grossEarnings - lunchDeducted);
+    const grossCommissionExact = dayLedger.reduce(
+      (s, c) => s + c.grossEarnings * c.commissionRate,
+      0
+    );
+    const effectiveFactor = grossEarnings > 0 ? netCommissionable / grossEarnings : 0;
+    baseCommissionEarned = Math.round(grossCommissionExact * effectiveFactor);
+    salonShare = Math.max(0, netCommissionable - baseCommissionEarned);
+  }
+
+  const historicalPaid = dayLedger
+    .filter((c) => c.isHistorical && c.paymentStatus === 'Paid')
+    .reduce((s, c) => s + c.employeeCommission, 0);
+
+  return {
+    grossEarnings,
+    lunchDeducted,
+    netCommissionable,
+    baseCommissionEarned,
+    salonShare,
+    historicalPaid,
+    servicesCount: dayLedger.length,
+    usesLegacyPerSaleAllocation,
+  };
+}
+
+/**
+ * Computes commission totals over a date range (and optional employee filter) using
+ * daily total sales minus daily lunch deduction before commission.
+ */
+export function computeCommissionAggregateForPeriod(
+  db: SalonDatabase,
+  options?: { startDate?: string; endDate?: string; employeeId?: string }
+): {
+  grossEarnings: number;
+  lunchDeducted: number;
+  netCommissionable: number;
+  baseCommissionEarned: number;
+  salonShare: number;
+  servicesCount: number;
+  byEmployee: Map<string, DayCommissionMetrics>;
+} {
+  const { startDate, endDate, employeeId } = options || {};
+  const ledger = db.commissionLedger.filter(
+    (c) =>
+      c.paymentStatus !== 'Reversed' &&
+      (!startDate || c.date >= startDate) &&
+      (!endDate || c.date <= endDate) &&
+      (!employeeId || c.employeeId === employeeId)
+  );
+  const lunches = db.lunchDeductions.filter(
+    (l) =>
+      (!startDate || l.date >= startDate) &&
+      (!endDate || l.date <= endDate) &&
+      (!employeeId || l.employeeId === employeeId)
+  );
+
+  const dayKeySet = new Set<string>();
+  for (const c of ledger) dayKeySet.add(`${c.employeeId}|${c.date}`);
+  for (const l of lunches) dayKeySet.add(`${l.employeeId}|${l.date}`);
+
+  const byEmployee = new Map<string, DayCommissionMetrics>();
+  let grossEarnings = 0;
+  let lunchDeducted = 0;
+  let netCommissionable = 0;
+  let baseCommissionEarned = 0;
+  let salonShare = 0;
+  let servicesCount = 0;
+
+  for (const key of dayKeySet) {
+    const sep = key.indexOf('|');
+    const empId = key.slice(0, sep);
+    const date = key.slice(sep + 1);
+    const dayLedger = ledger.filter((c) => c.employeeId === empId && c.date === date);
+    const dayLunch = lunches.filter((l) => l.employeeId === empId && l.date === date);
+    const metrics = computeEmployeeDayCommissionMetrics(dayLedger, dayLunch);
+
+    grossEarnings += metrics.grossEarnings;
+    lunchDeducted += metrics.lunchDeducted;
+    netCommissionable += metrics.netCommissionable;
+    baseCommissionEarned += metrics.baseCommissionEarned;
+    salonShare += metrics.salonShare;
+    servicesCount += metrics.servicesCount;
+
+    const existing = byEmployee.get(empId);
+    if (existing) {
+      existing.grossEarnings += metrics.grossEarnings;
+      existing.lunchDeducted += metrics.lunchDeducted;
+      existing.netCommissionable += metrics.netCommissionable;
+      existing.baseCommissionEarned += metrics.baseCommissionEarned;
+      existing.salonShare += metrics.salonShare;
+      existing.historicalPaid += metrics.historicalPaid;
+      existing.servicesCount += metrics.servicesCount;
+      existing.usesLegacyPerSaleAllocation =
+        existing.usesLegacyPerSaleAllocation || metrics.usesLegacyPerSaleAllocation;
+    } else {
+      byEmployee.set(empId, { ...metrics });
+    }
+  }
+
+  return {
+    grossEarnings,
+    lunchDeducted,
+    netCommissionable,
+    baseCommissionEarned,
+    salonShare,
+    servicesCount,
+    byEmployee,
+  };
+}
+
+/**
+ * Recomputes any UNPAID non-historical employee-days that still have legacy per-sale
+ * lunchAllocation > 0 so they switch cleanly to daily-total lunch deduction.
+ * Already-paid days and historical imported rows are strictly preserved untouched.
+ */
+export function normalizeUnpaidDailyLunchLedgers(db: SalonDatabase): boolean {
+  const candidateKeys = new Set<string>();
+  for (const c of db.commissionLedger) {
+    if (!c.isHistorical && c.paymentStatus !== 'Reversed' && c.lunchAllocation > 0) {
+      candidateKeys.add(`${c.employeeId}|${c.date}`);
+    }
+  }
+  if (candidateKeys.size === 0) return false;
+
+  let changed = false;
+  for (const key of candidateKeys) {
+    const sep = key.indexOf('|');
+    const employeeId = key.slice(0, sep);
+    const date = key.slice(sep + 1);
+
+    const dayEntries = db.commissionLedger.filter(
+      (c) => c.employeeId === employeeId && c.date === date && c.paymentStatus !== 'Reversed'
+    );
+    const hasHistoricalOrSettled = dayEntries.some(
+      (c) => Boolean(c.isHistorical) || c.paymentStatus === 'Paid' || c.paymentStatus === 'Partially Paid'
+    );
+    const hasPaymentForDay = db.commissionPayments.some(
+      (p) =>
+        p.employeeId === employeeId &&
+        (p.commissionDate === date || (!p.commissionDate && p.paymentDate === date))
+    );
+    const hasActiveTx = db.posTransactions.some(
+      (tx) =>
+        tx.date === date &&
+        !tx.isHistorical &&
+        tx.status !== 'Reversed' &&
+        tx.status !== 'Refunded' &&
+        tx.items.some((item) => item.employeeId === employeeId)
+    );
+
+    if (!hasHistoricalOrSettled && !hasPaymentForDay && hasActiveTx) {
+      recomputeEmployeeDailyCommission(db, employeeId, date);
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 export interface DailyEmployeeCommissionBreakdown {
@@ -296,32 +493,25 @@ export function getEmployeeDailyCommissionBreakdown(
     const dayLunch = lunches.filter((l) => l.date === d);
     const dayTips = tips.filter((t) => t.date === d);
 
-    const grossEarnings = dayLedger.reduce((s, c) => s + c.grossEarnings, 0);
-    const lunchDeducted = dayLunch.reduce((s, l) => s + l.amount, 0);
-    const netCommissionable = dayLedger.reduce((s, c) => s + c.netCommissionableEarnings, 0);
-    const baseCommissionEarned = dayLedger.reduce((s, c) => s + c.employeeCommission, 0);
+    const metrics = computeEmployeeDayCommissionMetrics(dayLedger, dayLunch);
     const adjTotal = dayAdj.reduce((s, a) => s + a.amount, 0);
-    const totalCommissionEarned = Math.max(0, baseCommissionEarned + adjTotal);
-    const salonShare = dayLedger.reduce((s, c) => s + c.salonShare, 0);
+    const totalCommissionEarned = Math.max(0, metrics.baseCommissionEarned + adjTotal);
     const directTips = dayTips.reduce((s, t) => s + t.amount, 0);
-    const historicalPaid = dayLedger
-      .filter((c) => c.isHistorical && c.paymentStatus === 'Paid')
-      .reduce((s, c) => s + c.employeeCommission, 0);
 
     dayMap.set(d, {
       date: d,
-      grossEarnings,
-      lunchDeducted,
-      netCommissionable,
-      baseCommissionEarned,
+      grossEarnings: metrics.grossEarnings,
+      lunchDeducted: metrics.lunchDeducted,
+      netCommissionable: metrics.netCommissionable,
+      baseCommissionEarned: metrics.baseCommissionEarned,
       adjustments: adjTotal,
       totalCommissionEarned,
-      salonShare,
+      salonShare: metrics.salonShare,
       directTips,
-      historicalPaid,
+      historicalPaid: metrics.historicalPaid,
       paidForDate: 0,
-      outstandingBalance: Math.max(0, totalCommissionEarned - historicalPaid),
-      servicesCount: dayLedger.length,
+      outstandingBalance: Math.max(0, totalCommissionEarned - metrics.historicalPaid),
+      servicesCount: metrics.servicesCount,
     });
   }
 
@@ -366,7 +556,6 @@ export function getEmployeeDailyCommissionBreakdown(
       day.paidForDate += take;
       extraLegacy -= take;
     }
-    // If excess still remains beyond earned rows, keep it on the last date so totalPaid aligns
     if (extraLegacy > 0 && sortedDates.length > 0) {
       const last = dayMap.get(sortedDates[sortedDates.length - 1])!;
       last.paidForDate += extraLegacy;
@@ -390,7 +579,6 @@ export function syncEmployeeCommissionLedgerStatuses(db: SalonDatabase, employee
   const byDate = new Map(breakdown.map((b) => [b.date, b]));
 
   for (const [date, day] of byDate.entries()) {
-    let remainingBudget = Math.max(0, day.paidForDate - day.historicalPaid);
     const entries = db.commissionLedger.filter(
       (c) =>
         c.employeeId === employeeId &&
@@ -398,10 +586,25 @@ export function syncEmployeeCommissionLedgerStatuses(db: SalonDatabase, employee
         !c.isHistorical &&
         c.paymentStatus !== 'Reversed'
     );
-    for (const entry of entries) {
-      if (remainingBudget >= entry.employeeCommission) {
+    if (entries.length === 0) continue;
+
+    if (day.outstandingBalance === 0 && (day.paidForDate > 0 || day.totalCommissionEarned === 0)) {
+      for (const entry of entries) {
         entry.paymentStatus = 'Paid';
-        remainingBudget -= entry.employeeCommission;
+      }
+      continue;
+    }
+
+    let remainingBudget = Math.max(0, day.paidForDate - day.historicalPaid);
+    const usesLegacy = entries.some((e) => e.lunchAllocation > 0);
+    const scaleFactor =
+      !usesLegacy && day.grossEarnings > 0 ? day.netCommissionable / day.grossEarnings : 1;
+
+    for (const entry of entries) {
+      const entryShare = Math.round(entry.employeeCommission * scaleFactor);
+      if (remainingBudget >= entryShare && entryShare > 0) {
+        entry.paymentStatus = 'Paid';
+        remainingBudget -= entryShare;
       } else if (remainingBudget > 0) {
         entry.paymentStatus = 'Partially Paid';
         remainingBudget = 0;
@@ -413,27 +616,24 @@ export function syncEmployeeCommissionLedgerStatuses(db: SalonDatabase, employee
 }
 
 /**
- * Computes per-employee commission summary (earned, adjustments, paid, outstanding)
- * and updates paymentStatus flags accurately without altering historical amounts.
+ * Computes per-employee commission summary (earned, lunch deducted, net commissionable, paid, outstanding)
+ * from the daily breakdowns so all figures match daily-lunch-before-commission calculations.
  */
 export function getEmployeeCommissionSummary(db: SalonDatabase, employeeId: string) {
-  const ledger = db.commissionLedger.filter(
-    (c) => c.employeeId === employeeId && c.paymentStatus !== 'Reversed'
-  );
-  const adjustments = db.commissionAdjustments.filter((a) => a.employeeId === employeeId);
+  const daily = getEmployeeDailyCommissionBreakdown(db, employeeId);
   const payments = db.commissionPayments.filter((p) => p.employeeId === employeeId);
-  const lunches = db.lunchDeductions.filter((l) => l.employeeId === employeeId);
+  const adjustments = db.commissionAdjustments.filter((a) => a.employeeId === employeeId);
   const tips = db.tips.filter(
     (t) => t.employeeId === employeeId && t.distributionMode === 'direct_to_employee'
   );
 
-  const grossEarnings = ledger.reduce((s, c) => s + c.grossEarnings, 0);
-  const totalLunchDeducted = lunches.reduce((s, l) => s + l.amount, 0);
-  const netCommissionable = ledger.reduce((s, c) => s + c.netCommissionableEarnings, 0);
-  const baseCommissionEarned = ledger.reduce((s, c) => s + c.employeeCommission, 0);
+  const grossEarnings = daily.reduce((s, d) => s + d.grossEarnings, 0);
+  const totalLunchDeducted = daily.reduce((s, d) => s + d.lunchDeducted, 0);
+  const netCommissionable = daily.reduce((s, d) => s + d.netCommissionable, 0);
+  const baseCommissionEarned = daily.reduce((s, d) => s + d.baseCommissionEarned, 0);
   const totalAdjustments = adjustments.reduce((s, a) => a.amount + s, 0);
-  const totalCommissionEarned = baseCommissionEarned + totalAdjustments;
-  const totalSalonShare = ledger.reduce((s, c) => s + c.salonShare, 0);
+  const totalCommissionEarned = Math.max(0, baseCommissionEarned + totalAdjustments);
+  const totalSalonShare = daily.reduce((s, d) => s + d.salonShare, 0);
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
   const outstandingBalance = Math.max(0, totalCommissionEarned - totalPaid);
   const directTips = tips.reduce((s, t) => s + t.amount, 0);

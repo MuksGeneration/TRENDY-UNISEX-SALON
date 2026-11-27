@@ -2089,12 +2089,12 @@ const EmployeeServiceHistoryModal: React.FC<{
                     </div>
                   </div>
                   <div>
-                    <div className="text-[11px] font-medium text-[#1D1717]/60">Commission Earned</div>
+                    <div className="text-[11px] font-medium text-[#1D1717]/60">Daily Commission (After Lunch)</div>
                     <div className="text-lg font-bold font-mono tabular-nums text-[#E83B84] mt-0.5">
                       {formatUGX(summary.commissionEarned)}
                     </div>
                     <div className="text-[11px] font-mono tabular-nums text-[#1D1717]/60 mt-0.5">
-                      Net {formatCompactUGX(summary.netCommissionable)} &middot; Lunch -{formatCompactUGX(summary.lunchDeduction)}
+                      Sales {formatCompactUGX(summary.serviceSales)} &minus; Lunch {formatCompactUGX(summary.lunchDeduction)} = Net {formatCompactUGX(summary.netCommissionable)}
                     </div>
                   </div>
                   <div>
@@ -2197,7 +2197,7 @@ const EmployeeServiceHistoryModal: React.FC<{
                         <th className="py-2.5 px-3">Service / Item</th>
                         <th className="py-2.5 px-3 text-right">Qty</th>
                         <th className="py-2.5 px-3 text-right">Amount</th>
-                        <th className="py-2.5 px-3 text-right">Commission</th>
+                        <th className="py-2.5 px-3 text-right">Service Comm.</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#1D1717]/10">

@@ -26,6 +26,8 @@ import {
 } from './auth.ts';
 import { validatePasswordPolicy } from './passwordPolicy.ts';
 import {
+  computeCommissionAggregateForPeriod,
+  computeEmployeeDayCommissionMetrics,
   getEmployeeCommissionSummary,
   getEmployeeDailyCommissionBreakdown,
   getPolicyForDate,
@@ -560,15 +562,14 @@ export function createApiRouter() {
             (c) => c.employeeId === empId && c.date === today && c.paymentStatus !== 'Reversed'
           )
         : [];
-      const todayLunch = empId
-        ? db.lunchDeductions
-            .filter((l) => l.employeeId === empId && l.date === today)
-            .reduce((s, l) => s + l.amount, 0)
-        : 0;
+      const todayLunchRows = empId
+        ? db.lunchDeductions.filter((l) => l.employeeId === empId && l.date === today)
+        : [];
+      const todayMetrics = computeEmployeeDayCommissionMetrics(todayLedger, todayLunchRows);
       const upcomingAppointments = empId
         ? db.appointments
             .filter((a) => a.employeeId === empId && a.date >= today && a.status !== 'Cancelled')
-            .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${a.startTime}`))
+            .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`))
             .slice(0, 10)
         : [];
 
@@ -608,9 +609,12 @@ export function createApiRouter() {
           }
         }
         const dayComm = empId
-          ? db.commissionLedger
-              .filter((c) => c.employeeId === empId && c.date === iso && c.paymentStatus !== 'Reversed')
-              .reduce((s, c) => s + c.employeeCommission, 0)
+          ? computeEmployeeDayCommissionMetrics(
+              db.commissionLedger.filter(
+                (c) => c.employeeId === empId && c.date === iso && c.paymentStatus !== 'Reversed'
+              ),
+              db.lunchDeductions.filter((l) => l.employeeId === empId && l.date === iso)
+            ).baseCommissionEarned
           : 0;
         dailySalesTrend.push({
           date: iso,
@@ -629,11 +633,11 @@ export function createApiRouter() {
         employeeProfileLinked: Boolean(emp),
         employee: emp ? { ...emp, status: resolveEmployeeStatus(emp) } : undefined,
         todayStats: {
-          grossEarnings: todayLedger.reduce((s, c) => s + c.grossEarnings, 0),
-          lunchDeduction: todayLunch,
-          netCommissionable: todayLedger.reduce((s, c) => s + c.netCommissionableEarnings, 0),
-          commissionEarned: todayLedger.reduce((s, c) => s + c.employeeCommission, 0),
-          servicesCount: todayLedger.length,
+          grossEarnings: todayMetrics.grossEarnings,
+          lunchDeduction: todayMetrics.lunchDeducted,
+          netCommissionable: todayMetrics.netCommissionable,
+          commissionEarned: todayMetrics.baseCommissionEarned,
+          servicesCount: todayMetrics.servicesCount,
         },
         summary,
         dailySalesTrend,
@@ -673,14 +677,9 @@ export function createApiRouter() {
     const todaySales = calcBreakdown(todayTx);
     const periodSales = calcBreakdown(periodTx);
 
-    const todayLedger = db.commissionLedger.filter((c) => c.date === today && c.paymentStatus !== 'Reversed');
-    const periodLedger = db.commissionLedger.filter(
-      (c) => c.date >= startDate && c.date <= endDate && c.paymentStatus !== 'Reversed'
-    );
-
-    const todayLunchTotal = db.lunchDeductions
-      .filter((l) => l.date === today)
-      .reduce((s, l) => s + l.amount, 0);
+    const todayAgg = computeCommissionAggregateForPeriod(db, { startDate: today, endDate: today });
+    const periodAgg = computeCommissionAggregateForPeriod(db, { startDate, endDate });
+    const todayLunchTotal = todayAgg.lunchDeducted;
 
     const todayExpensesTotal = db.expenses
       .filter((e) => e.date === today && e.status !== 'Rejected')
@@ -689,8 +688,8 @@ export function createApiRouter() {
       .filter((e) => e.date >= startDate && e.date <= endDate && e.status !== 'Rejected')
       .reduce((s, e) => s + e.amount, 0);
 
-    const todaySalonShare = todayLedger.reduce((s, c) => s + c.salonShare, 0);
-    const periodSalonShare = periodLedger.reduce((s, c) => s + c.salonShare, 0);
+    const todaySalonShare = todayAgg.salonShare;
+    const periodSalonShare = periodAgg.salonShare;
 
     // Build current-week (Monday -> Sunday) daily revenue trend from local DB state
     const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -779,7 +778,7 @@ export function createApiRouter() {
 
     // Employee performance
     const employeePerformance = db.employees.map((emp) => {
-      const empPeriodLedger = periodLedger.filter((c) => c.employeeId === emp.id);
+      const empPeriodAgg = periodAgg.byEmployee.get(emp.id);
       const summary = getEmployeeCommissionSummary(db, emp.id);
       return {
         employeeId: emp.id,
@@ -787,9 +786,9 @@ export function createApiRouter() {
         roleTitle: emp.roleTitle,
         avatarUrl: emp.avatarUrl,
         active: emp.active,
-        periodGross: empPeriodLedger.reduce((s, c) => s + c.grossEarnings, 0),
-        periodCommission: empPeriodLedger.reduce((s, c) => s + c.employeeCommission, 0),
-        periodServicesCount: empPeriodLedger.length,
+        periodGross: empPeriodAgg?.grossEarnings ?? 0,
+        periodCommission: empPeriodAgg?.baseCommissionEarned ?? 0,
+        periodServicesCount: empPeriodAgg?.servicesCount ?? 0,
         outstandingCommission: summary.outstandingBalance,
         totalCommissionPaid: summary.totalPaid,
       };
@@ -818,9 +817,10 @@ export function createApiRouter() {
 
     // Daily sales per employee (for selected salesDate + 7-day trend ending on salesDate)
     const salesDateTx = activeTx.filter((t) => t.date === salesDate);
-    const salesDateLedger = db.commissionLedger.filter(
-      (c) => c.date === salesDate && c.paymentStatus !== 'Reversed'
-    );
+    const salesDateAgg = computeCommissionAggregateForPeriod(db, {
+      startDate: salesDate,
+      endDate: salesDate,
+    });
     const employeeSalesList = db.employees
       .filter((emp) => emp.active || salesDateTx.some((t) => t.items.some((i) => i.employeeId === emp.id)))
       .map((emp) => {
@@ -838,9 +838,9 @@ export function createApiRouter() {
             }
           }
         }
-        const empDayLedger = salesDateLedger.filter((c) => c.employeeId === emp.id);
-        const commissionEarned = empDayLedger.reduce((s, c) => s + c.employeeCommission, 0);
-        const salonShare = empDayLedger.reduce((s, c) => s + c.salonShare, 0);
+        const empDayMetrics = salesDateAgg.byEmployee.get(emp.id);
+        const commissionEarned = empDayMetrics?.baseCommissionEarned ?? 0;
+        const salonShare = empDayMetrics?.salonShare ?? 0;
         const firstPart = emp.fullName.trim().split(/\s+/)[0] || emp.fullName;
         return {
           employeeId: emp.id,
@@ -923,9 +923,9 @@ export function createApiRouter() {
         customerCount: todaySales.customerCount,
         completedAppointments: db.appointments.filter((a) => a.date === today && a.status === 'Completed').length,
         walkIns: db.walkIns.filter((w) => w.arrivalTime.startsWith(today)).length,
-        employeeEarnings: todayLedger.reduce((s, c) => s + c.grossEarnings, 0),
+        employeeEarnings: todayAgg.grossEarnings,
         lunchDeductions: todayLunchTotal,
-        employeeCommissions: todayLedger.reduce((s, c) => s + c.employeeCommission, 0),
+        employeeCommissions: todayAgg.baseCommissionEarned,
         salonShare: todaySalonShare,
         expenses: todayExpensesTotal,
         profitEstimate: todaySalonShare + todaySales.productRevenue - todayExpensesTotal,
@@ -1109,12 +1109,14 @@ export function createApiRouter() {
 
     items.sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
 
-    const lunchDeduction = db.lunchDeductions
-      .filter((l) => l.employeeId === targetEmployeeId && l.date === targetDate)
-      .reduce((s, l) => s + l.amount, 0);
-    const commissionEarned = dayLedger.reduce((s, c) => s + c.employeeCommission, 0);
-    const salonShare = dayLedger.reduce((s, c) => s + c.salonShare, 0);
-    const netCommissionable = dayLedger.reduce((s, c) => s + c.netCommissionableEarnings, 0);
+    const dayLunchRows = db.lunchDeductions.filter(
+      (l) => l.employeeId === targetEmployeeId && l.date === targetDate
+    );
+    const dayMetrics = computeEmployeeDayCommissionMetrics(dayLedger, dayLunchRows);
+    const lunchDeduction = dayMetrics.lunchDeducted;
+    const commissionEarned = dayMetrics.baseCommissionEarned;
+    const salonShare = dayMetrics.salonShare;
+    const netCommissionable = dayMetrics.netCommissionable;
     const tipsEarned = db.tips
       .filter((t) => t.employeeId === targetEmployeeId && t.date === targetDate)
       .reduce((s, t) => s + t.amount, 0);
@@ -4021,21 +4023,20 @@ export function createApiRouter() {
           c.paymentStatus !== 'Reversed' &&
           (!employeeFilter || c.employeeId === employeeFilter)
       );
-      const lunches = db.lunchDeductions.filter(
-        (l) =>
-          l.date >= startDate &&
-          l.date <= endDate &&
-          (!employeeFilter || l.employeeId === employeeFilter)
-      );
+      const periodCommissionAgg = computeCommissionAggregateForPeriod(db, {
+        startDate,
+        endDate,
+        employeeId: employeeFilter || undefined,
+      });
       const expenses = db.expenses.filter(
         (e) => e.date >= startDate && e.date <= endDate && e.status !== 'Rejected'
       );
 
       const totalBilledSales = txs.reduce((s, t) => s + t.totalAmount, 0);
       const totalCollectedPayments = txs.reduce((s, t) => s + t.amountPaid, 0);
-      const totalEmployeeCommissions = ledger.reduce((s, c) => s + c.employeeCommission, 0);
-      const totalLunchDeducted = lunches.reduce((s, l) => s + l.amount, 0);
-      const totalSalonShare = ledger.reduce((s, c) => s + c.salonShare, 0);
+      const totalEmployeeCommissions = periodCommissionAgg.baseCommissionEarned;
+      const totalLunchDeducted = periodCommissionAgg.lunchDeducted;
+      const totalSalonShare = periodCommissionAgg.salonShare;
       const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
       const retailCostOfGoods = txs.reduce((sum, tx) => {
         return (
@@ -4145,21 +4146,18 @@ export function createApiRouter() {
             .filter((g) => g.status === 'Active')
             .reduce((s, g) => s + g.balance, 0),
         },
-        employeeReport: db.employees.map((emp) => ({
-          employeeId: emp.id,
-          fullName: emp.fullName,
-          periodServices: ledger.filter((c) => c.employeeId === emp.id).length,
-          periodGross: ledger
-            .filter((c) => c.employeeId === emp.id)
-            .reduce((s, c) => s + c.grossEarnings, 0),
-          periodLunch: lunches
-            .filter((l) => l.employeeId === emp.id)
-            .reduce((s, l) => s + l.amount, 0),
-          periodCommission: ledger
-            .filter((c) => c.employeeId === emp.id)
-            .reduce((s, c) => s + c.employeeCommission, 0),
-          ...getEmployeeCommissionSummary(db, emp.id),
-        })),
+        employeeReport: db.employees.map((emp) => {
+          const empPeriod = periodCommissionAgg.byEmployee.get(emp.id);
+          return {
+            employeeId: emp.id,
+            fullName: emp.fullName,
+            periodServices: empPeriod?.servicesCount ?? 0,
+            periodGross: empPeriod?.grossEarnings ?? 0,
+            periodLunch: empPeriod?.lunchDeducted ?? 0,
+            periodCommission: empPeriod?.baseCommissionEarned ?? 0,
+            ...getEmployeeCommissionSummary(db, emp.id),
+          };
+        }),
         appointmentReport: {
           total: appointmentsInPeriod.length,
           completed: appointmentsInPeriod.filter((a) => a.status === 'Completed').length,

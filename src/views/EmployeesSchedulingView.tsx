@@ -2633,19 +2633,18 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                     exportReportToPdf(
                       `Employee Statement - ${statement.employee.fullName}`,
                       statement.employee.roleTitle,
-                      ['Date', 'Ref', 'Service', 'Gross', 'Lunch Alloc', 'Net Comm.', 'Rate', 'Commission'],
+                      ['Date', 'Ref', 'Service', 'Sale Amount', 'Rate', 'Service Comm.', 'Status'],
                       statement.ledger.map((l) => [
                         l.date,
                         l.transactionReference,
                         l.serviceName,
                         formatUGX(l.grossEarnings),
-                        formatUGX(l.lunchAllocation),
-                        formatUGX(l.netCommissionableEarnings),
                         `${Math.round(l.commissionRate * 100)}%`,
                         formatUGX(l.employeeCommission),
+                        l.paymentStatus,
                       ]),
                       [
-                        `Total Gross: ${formatUGX(statement.summary.grossEarnings)} | Lunch Deducted: ${formatUGX(statement.summary.totalLunchDeducted)} | Total Commission: ${formatUGX(statement.summary.totalCommissionEarned)}`,
+                        `Total Sales: ${formatUGX(statement.summary.grossEarnings)} | Daily Lunch Deducted: ${formatUGX(statement.summary.totalLunchDeducted)} | Net Commission Earned: ${formatUGX(statement.summary.totalCommissionEarned)}`,
                         `Total Paid: ${formatUGX(statement.summary.totalPaid)} | Outstanding Balance: ${formatUGX(statement.summary.outstandingBalance)}`,
                       ]
                     )
@@ -2665,12 +2664,12 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
 
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
               <div className="p-3 rounded-xl bg-[#F8EEEB]">
-                <div className="text-[#1D1717]/60">Gross Earnings</div>
+                <div className="text-[#1D1717]/60">Total Sales</div>
                 <div className="font-mono font-bold mt-1">{formatUGX(statement.summary.grossEarnings)}</div>
               </div>
               <div className="p-3 rounded-xl bg-[#F8EEEB]">
-                <div className="text-[#1D1717]/60">Lunch Deducted</div>
-                <div className="font-mono font-bold mt-1">{formatUGX(statement.summary.totalLunchDeducted)}</div>
+                <div className="text-[#1D1717]/60">Daily Lunch Deducted</div>
+                <div className="font-mono font-bold mt-1">-{formatUGX(statement.summary.totalLunchDeducted)}</div>
               </div>
               <div className="p-3 rounded-xl bg-[#F8EEEB]">
                 <div className="text-[#1D1717]/60">Net Commission</div>
@@ -2692,11 +2691,10 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                   <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
                     <th className="py-2 px-2">Date</th>
                     <th className="py-2 px-2">Service</th>
-                    <th className="py-2 px-2 text-right">Gross</th>
-                    <th className="py-2 px-2 text-right">Lunch Alloc</th>
-                    <th className="py-2 px-2 text-right">Net Base</th>
+                    <th className="py-2 px-2 text-right">Sale Amount</th>
                     <th className="py-2 px-2 text-right">Rate</th>
-                    <th className="py-2 px-2 text-right">Commission</th>
+                    <th className="py-2 px-2 text-right">Service Comm.</th>
+                    <th className="py-2 px-2">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1D1717]/10">
@@ -2705,12 +2703,11 @@ export const EmployeesSchedulingView: React.FC<EmployeesSchedulingViewProps> = (
                       <td className="py-2 px-2 font-mono">{l.date}</td>
                       <td className="py-2 px-2">{l.serviceName}</td>
                       <td className="py-2 px-2 text-right font-mono">{formatUGX(l.grossEarnings)}</td>
-                      <td className="py-2 px-2 text-right font-mono">{formatUGX(l.lunchAllocation)}</td>
-                      <td className="py-2 px-2 text-right font-mono">{formatUGX(l.netCommissionableEarnings)}</td>
                       <td className="py-2 px-2 text-right font-mono">{Math.round(l.commissionRate * 100)}%</td>
                       <td className="py-2 px-2 text-right font-mono font-bold text-[#E83B84]">
                         {formatUGX(l.employeeCommission)}
                       </td>
+                      <td className="py-2 px-2 font-semibold">{l.paymentStatus}</td>
                     </tr>
                   ))}
                 </tbody>

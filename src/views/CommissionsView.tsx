@@ -197,6 +197,33 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
     ? ledger.filter((row) => row.date === ledgerDateFilter)
     : ledger;
 
+  const dailyBalanceLookup = new Map<string, DailyBalanceRow>();
+  for (const row of dailyBalances) {
+    dailyBalanceLookup.set(`${row.date}|${row.employeeId}`, row);
+  }
+
+  // Group ledger rows by (date, employeeId) so lunch is shown deducted once per daily total, never per sale
+  const groupedLedgerDays = Array.from(
+    filteredLedger
+      .reduce((map, row) => {
+        const key = `${row.date}|${row.employeeId}`;
+        const existing = map.get(key);
+        if (existing) {
+          existing.rows.push(row);
+        } else {
+          map.set(key, {
+            key,
+            date: row.date,
+            employeeId: row.employeeId,
+            employeeName: row.employeeName,
+            rows: [row],
+          });
+        }
+        return map;
+      }, new Map<string, { key: string; date: string; employeeId: string; employeeName: string; rows: CommissionLedgerEntry[] }>())
+      .values()
+  ).sort((a, b) => b.date.localeCompare(a.date) || a.employeeName.localeCompare(b.employeeName));
+
   const selectedDateRows = dailyBalances.filter((row) => row.date === selectedPayoutDate);
   const unpaidDayRows = dailyBalances.filter((row) => row.outstandingBalance > 0);
   const unpaidDateTotals = Array.from(
@@ -231,8 +258,7 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
               </h2>
               <p className="text-xs text-[#1D1717]/70">
                 Daily Lunch Deduction: <span className="font-mono font-semibold">{formatUGX(activePolicy?.lunchDeductionAmount ?? 2500)}</span>{' '}
-                deducted once per working day BEFORE commission &middot; Allocation method:{' '}
-                <span className="font-semibold capitalize">{activePolicy?.lunchAllocationMethod?.replace(/_/g, ' ') || 'proportional'}</span>
+                deducted ONCE from total daily sales BEFORE calculating commission (never deducted on every individual sale).
               </p>
             </div>
 
@@ -257,7 +283,12 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
           {/* Commission Ledger Table */}
           <div className="bg-white border border-[#1D1717]/10 rounded-2xl p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <h3 className="text-base font-bold">Detailed Commission Ledger</h3>
+              <div>
+                <h3 className="text-base font-bold">Detailed Commission Ledger</h3>
+                <p className="text-xs text-[#1D1717]/60 mt-0.5">
+                  Individual sales record gross service amounts; daily lunch is deducted once per employee on total daily sales below each day&rsquo;s services.
+                </p>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1.5 bg-[#F8EEEB] border border-[#1D1717]/10 rounded-xl px-2.5 py-1 text-xs">
                   <Calendar className="w-3.5 h-3.5 text-[#E83B84]" />
@@ -283,19 +314,25 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
                     exportReportToPdf(
                       'Commission Ledger Report',
                       'Trendy Unisex Salon',
-                      ['Date', 'Ref', 'Employee', 'Service', 'Gross', 'Lunch Alloc', 'Net Base', 'Rate', 'Commission', 'Salon Share'],
+                      ['Date', 'Ref', 'Employee', 'Service', 'Sale Amount', 'Rate', 'Service Comm.', 'Status'],
                       filteredLedger.map((l) => [
                         l.date,
                         l.transactionReference,
                         l.employeeName,
                         l.serviceName,
                         formatUGX(l.grossEarnings),
-                        formatUGX(l.lunchAllocation),
-                        formatUGX(l.netCommissionableEarnings),
                         `${Math.round(l.commissionRate * 100)}%`,
                         formatUGX(l.employeeCommission),
-                        formatUGX(l.salonShare),
-                      ])
+                        l.paymentStatus,
+                      ]),
+                      groupedLedgerDays.slice(0, 25).map((grp) => {
+                        const dayBal = dailyBalanceLookup.get(grp.key);
+                        const gross = dayBal?.grossEarnings ?? grp.rows.reduce((s, r) => s + r.grossEarnings, 0);
+                        const lunch = dayBal?.totalLunchDeducted ?? 0;
+                        const net = dayBal?.netCommissionable ?? Math.max(0, gross - lunch);
+                        const comm = dayBal?.totalCommissionEarned ?? grp.rows.reduce((s, r) => s + r.employeeCommission, 0);
+                        return `${grp.date} | ${grp.employeeName}: Daily Sales ${formatUGX(gross)} - Lunch ${formatUGX(lunch)} = Net Base ${formatUGX(net)} -> Daily Commission ${formatUGX(comm)}`;
+                      })
                     )
                   }
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#1D1717]/15 text-xs font-semibold hover:bg-[#F8EEEB] cursor-pointer"
@@ -319,48 +356,84 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
                       <th className="py-3 px-2.5">Date &amp; Ref</th>
                       <th className="py-3 px-2.5">Employee</th>
                       <th className="py-3 px-2.5">Service (Category)</th>
-                      <th className="py-3 px-2.5 text-right">Gross</th>
-                      <th className="py-3 px-2.5 text-right">Lunch Alloc</th>
-                      <th className="py-3 px-2.5 text-right">Net Base</th>
+                      <th className="py-3 px-2.5 text-right">Sale Amount</th>
                       <th className="py-3 px-2.5 text-right">Rate</th>
-                      <th className="py-3 px-2.5 text-right">Employee Comm.</th>
+                      <th className="py-3 px-2.5 text-right">Service Comm.</th>
                       <th className="py-3 px-2.5 text-right">Salon Share</th>
                       <th className="py-3 px-2.5">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1D1717]/10">
-                    {filteredLedger.map((row) => (
-                      <tr key={row.id} className="hover:bg-[#F8EEEB]/50">
-                        <td className="py-2.5 px-2.5 font-mono">
-                          <div>{row.date}</div>
-                          <div className="text-[11px] text-[#1D1717]/55">{row.transactionReference}</div>
-                        </td>
-                        <td className="py-2.5 px-2.5 font-semibold">{row.employeeName}</td>
-                        <td className="py-2.5 px-2.5">
-                          <div>{row.serviceName}</div>
-                          <div className="text-[11px] text-[#1D1717]/55">{row.serviceCategory}</div>
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono tabular-nums">
-                          {formatUGX(row.grossEarnings)}
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-[#1D1717]/70">
-                          -{formatUGX(row.lunchAllocation)}
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono tabular-nums font-semibold">
-                          {formatUGX(row.netCommissionableEarnings)}
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono">
-                          {Math.round(row.commissionRate * 100)}%
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono tabular-nums font-bold text-[#E83B84]">
-                          {formatUGX(row.employeeCommission)}
-                        </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono tabular-nums">
-                          {formatUGX(row.salonShare)}
-                        </td>
-                        <td className="py-2.5 px-2.5 font-semibold">{row.paymentStatus}</td>
-                      </tr>
-                    ))}
+                    {groupedLedgerDays.map((group) => {
+                      const dayBal = dailyBalanceLookup.get(group.key);
+                      const dailyGross = dayBal?.grossEarnings ?? group.rows.reduce((s, r) => s + r.grossEarnings, 0);
+                      const dailyLunch = dayBal?.totalLunchDeducted ?? 0;
+                      const dailyNet = dayBal?.netCommissionable ?? Math.max(0, dailyGross - dailyLunch);
+                      const dailyComm = dayBal?.totalCommissionEarned ?? group.rows.reduce((s, r) => s + r.employeeCommission, 0);
+                      const dailySalon = dayBal?.totalSalonShare ?? group.rows.reduce((s, r) => s + r.salonShare, 0);
+                      const allPaid = dayBal ? dayBal.outstandingBalance === 0 && dailyComm > 0 : group.rows.every((r) => r.paymentStatus === 'Paid');
+
+                      return (
+                        <React.Fragment key={group.key}>
+                          {group.rows.map((row) => (
+                            <tr key={row.id} className="hover:bg-[#F8EEEB]/40">
+                              <td className="py-2.5 px-2.5 font-mono">
+                                <div>{row.date}</div>
+                                <div className="text-[11px] text-[#1D1717]/55">{row.transactionReference}</div>
+                              </td>
+                              <td className="py-2.5 px-2.5 font-semibold">{row.employeeName}</td>
+                              <td className="py-2.5 px-2.5">
+                                <div>{row.serviceName}</div>
+                                <div className="text-[11px] text-[#1D1717]/55">{row.serviceCategory}</div>
+                              </td>
+                              <td className="py-2.5 px-2.5 text-right font-mono tabular-nums">
+                                {formatUGX(row.grossEarnings)}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-right font-mono">
+                                {Math.round(row.commissionRate * 100)}%
+                              </td>
+                              <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-[#1D1717]/80">
+                                {formatUGX(row.employeeCommission)}
+                              </td>
+                              <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-[#1D1717]/70">
+                                {formatUGX(row.salonShare)}
+                              </td>
+                              <td className="py-2.5 px-2.5 font-semibold">{row.paymentStatus}</td>
+                            </tr>
+                          ))}
+                          <tr className="bg-[#F8EEEB]/75 border-b-2 border-[#1D1717]/15">
+                            <td colSpan={3} className="py-2.5 px-2.5 text-[11px] font-semibold text-[#1D1717]">
+                              <span>Daily Summary &mdash; {group.employeeName} ({group.date})</span>
+                              <span className="ml-2 font-normal text-[#1D1717]/65">
+                                Total Daily Sales {formatUGX(dailyGross)} &minus; Daily Lunch {formatUGX(dailyLunch)} = Net Base{' '}
+                                <strong className="font-mono text-[#1D1717]">{formatUGX(dailyNet)}</strong>
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-2.5 text-right font-mono tabular-nums font-bold text-[#1D1717]">
+                              {formatUGX(dailyGross)}
+                            </td>
+                            <td className="py-2.5 px-2.5 text-right font-mono text-[11px] text-[#1D1717]/65">
+                              {dailyLunch > 0 ? `-${formatUGX(dailyLunch)} lunch` : 'No lunch'}
+                            </td>
+                            <td className="py-2.5 px-2.5 text-right font-mono tabular-nums font-bold text-[#E83B84]">
+                              {formatUGX(dailyComm)}
+                            </td>
+                            <td className="py-2.5 px-2.5 text-right font-mono tabular-nums font-semibold text-[#1D1717]">
+                              {formatUGX(dailySalon)}
+                            </td>
+                            <td className="py-2.5 px-2.5 text-[11px] font-bold">
+                              {allPaid ? (
+                                <span className="text-emerald-700">Paid</span>
+                              ) : dayBal && dayBal.totalPaid > 0 ? (
+                                <span className="text-amber-700">Bal {formatUGX(dayBal.outstandingBalance)}</span>
+                              ) : (
+                                <span className="text-[#E83B84]">Unpaid</span>
+                              )}
+                            </td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -711,7 +784,7 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
           <div>
             <h3 className="text-base font-bold">Daily Lunch Deduction Ledger (Once Per Working Day)</h3>
             <p className="text-xs text-[#1D1717]/60 mt-0.5">
-              UGX 2,500 is deducted exactly once per eligible employee per working day BEFORE commission calculation, never per customer.
+              UGX 2,500 is deducted once per eligible employee on total daily sales BEFORE commission calculation, never deducted per sale.
             </p>
           </div>
           {lunchDeductions.length === 0 ? (
@@ -723,9 +796,9 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
                   <tr className="border-b border-[#1D1717]/10 text-[#1D1717]/60">
                     <th className="py-3 px-3">Date</th>
                     <th className="py-3 px-3">Employee</th>
-                    <th className="py-3 px-3 text-right">Gross Daily Earnings</th>
+                    <th className="py-3 px-3 text-right">Total Daily Sales</th>
                     <th className="py-3 px-3 text-right">Lunch Deducted (Once/Day)</th>
-                    <th className="py-3 px-3">Allocation Method</th>
+                    <th className="py-3 px-3 text-right">Net Daily Sales Base</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1D1717]/10">
@@ -735,9 +808,11 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
                       <td className="py-2.5 px-3 font-semibold">{l.employeeName}</td>
                       <td className="py-2.5 px-3 text-right font-mono">{formatUGX(l.grossDailyEarnings)}</td>
                       <td className="py-2.5 px-3 text-right font-mono font-bold text-[#E83B84]">
-                        {formatUGX(l.amount)}
+                        -{formatUGX(l.amount)}
                       </td>
-                      <td className="py-2.5 px-3 capitalize">{l.allocationMethod.replace(/_/g, ' ')}</td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold">
+                        {formatUGX(Math.max(0, l.grossDailyEarnings - l.amount))}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -888,28 +963,14 @@ export const CommissionsView: React.FC<CommissionsViewProps> = ({ mode, user }) 
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block font-semibold mb-1">Daily Lunch (UGX)</label>
-                <input
-                  type="number"
-                  value={lunchAmt}
-                  onChange={(e) => setLunchAmt(Number(e.target.value))}
-                  className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Lunch Allocation</label>
-                <select
-                  value={lunchMethod}
-                  onChange={(e) => setLunchMethod(e.target.value as CommissionPolicy['lunchAllocationMethod'])}
-                  className="w-full px-2 py-2 rounded-xl border border-[#1D1717]/15 bg-white"
-                >
-                  <option value="proportional">Proportional</option>
-                  <option value="highest_earning_category">Highest Earning First</option>
-                  <option value="lowest_rate_first">Lowest Rate First</option>
-                </select>
-              </div>
+            <div>
+              <label className="block font-semibold mb-1">Daily Lunch Deduction (UGX, deducted once from total daily sales)</label>
+              <input
+                type="number"
+                value={lunchAmt}
+                onChange={(e) => setLunchAmt(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-xl border border-[#1D1717]/15 font-mono"
+              />
             </div>
             <div className="flex justify-end gap-2">
               <button

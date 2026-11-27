@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { SalonDatabase, AuditLogEntry, UserRole, UserSessionRecord } from './types.ts';
+import { normalizeUnpaidDailyLunchLedgers } from './commissionEngine.ts';
 import {
   getAppsScriptBridgeUrl,
   getServerGoogleAccessToken,
@@ -547,6 +548,9 @@ function normalizeLoadedDb(db: SalonDatabase): boolean {
   }
   if (hadLegacyReceptionistUsers || hadLegacyNotifRoles || settingsBackfilled) {
     db.users = db.users.filter((u) => (u.role as string) !== 'receptionist');
+    modified = true;
+  }
+  if (normalizeUnpaidDailyLunchLedgers(db)) {
     modified = true;
   }
   return modified;
